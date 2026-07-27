@@ -24,6 +24,15 @@ export type Photo = {
   alt: string;
 };
 
+export type LocationSource = "database" | "osm";
+
+export type OsmMetadata = {
+  osmId: number;
+  osmType: "node" | "way" | "relation";
+  provider: "nominatim" | "overpass";
+  tags?: Record<string, string>;
+};
+
 export type Place = {
   id: string;
   slug: string;
@@ -42,6 +51,9 @@ export type Place = {
   verifiedAt?: string;
   verifiedBy?: string;
   distanceKm?: number;
+  source: LocationSource;
+  wifiMessage?: string;
+  osm?: OsmMetadata;
   wifiNetworks: WifiNetwork[];
   amenities: AmenityFlags;
   photos: Photo[];
@@ -60,5 +72,7 @@ export type Suggestion = {
   subtitle: string;
   latitude?: number;
   longitude?: number;
-  type: "place" | "address" | "city";
+  type: "place" | "address" | "city" | "poi";
+  source?: LocationSource;
+  place?: Place;
 };

@@ -67,6 +67,8 @@ export async function getPlaces(): Promise<Place[]> {
       hours: place.hours ?? undefined,
       verifiedAt: place.verified_at ?? undefined,
       verifiedBy: place.verified_by ?? undefined,
+      source: "database",
+      wifiMessage: place.wifi_networks?.length ? undefined : "Wi-Fi information is currently under review.",
       amenities: {
         powerOutlets: Boolean(place.power_outlets),
         laptopFriendly: Boolean(place.laptop_friendly),

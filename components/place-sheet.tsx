@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Copy, ExternalLink, MapPinned, Phone, Pin, X } from "lucide-react";
+import { Copy, ExternalLink, MapPinned, Phone, X } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -34,6 +34,13 @@ const amenityLabels: Array<{ key: keyof Place["amenities"]; label: string }> = [
 export function PlaceSheet({ place, open, onClose, onToggleFavorite, isFavorite }: Props) {
   const wifi = place?.wifiNetworks[0];
   const password = wifi?.password ?? null;
+  const wifiMessage =
+    place?.wifiMessage ??
+    (place?.source === "osm"
+      ? "Wi-Fi information is currently under review."
+      : place?.hasWifi
+        ? "Wi-Fi details are being verified."
+        : "Wi-Fi information is currently under review.");
 
   const handleCopy = async () => {
     if (!password) return;
@@ -66,6 +73,9 @@ export function PlaceSheet({ place, open, onClose, onToggleFavorite, isFavorite 
               <div className="mt-2 flex flex-wrap gap-2">
                 <Badge variant="accent">{place.category}</Badge>
                 {place.wifiFree ? <Badge variant="success">Free WiFi</Badge> : <Badge variant="warning">Purchase required</Badge>}
+                <Badge variant={place.source === "osm" ? "default" : "accent"}>
+                  {place.source === "osm" ? "OpenStreetMap" : "Verified database"}
+                </Badge>
                 <Badge variant="default">{formatDistance(place.distanceKm)}</Badge>
               </div>
             </div>
@@ -117,7 +127,9 @@ export function PlaceSheet({ place, open, onClose, onToggleFavorite, isFavorite 
 
                 <div className="rounded-2xl bg-secondary/50 p-4">
                   <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">Password</p>
-                  <p className="mt-1 break-all text-sm font-medium">{password ?? "Ask staff or verify at counter"}</p>
+                  <p className="mt-1 break-all text-sm font-medium">
+                    {password ?? wifiMessage}
+                  </p>
                 </div>
 
                 <Button
@@ -143,7 +155,7 @@ export function PlaceSheet({ place, open, onClose, onToggleFavorite, isFavorite 
                 Notes
               </p>
               <p className="mt-2 text-sm leading-6 text-foreground/90">
-                {place.notes ?? "No extra notes were added yet."}
+                {place.notes ?? wifiMessage}
               </p>
             </div>
 

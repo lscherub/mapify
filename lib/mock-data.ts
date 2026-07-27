@@ -18,6 +18,7 @@ export const demoPlaces: Place[] = [
     hours: "7:00 AM - 7:00 PM",
     verifiedAt: "2026-07-18",
     verifiedBy: "Admin verified",
+    source: "database",
     wifiNetworks: [
       {
         id: "wifi-1",
@@ -63,6 +64,7 @@ export const demoPlaces: Place[] = [
     hours: "8:00 AM - 8:00 PM",
     verifiedAt: "2026-07-20",
     verifiedBy: "Admin verified",
+    source: "database",
     wifiNetworks: [
       {
         id: "wifi-2",
@@ -102,6 +104,7 @@ export const demoPlaces: Place[] = [
     hours: "10:00 AM - 6:00 PM",
     verifiedAt: "2026-07-21",
     verifiedBy: "Admin verified",
+    source: "database",
     wifiNetworks: [
       {
         id: "wifi-3",
@@ -141,6 +144,7 @@ export const demoPlaces: Place[] = [
     hours: "7:30 AM - 6:30 PM",
     verifiedAt: "2026-07-15",
     verifiedBy: "Admin verified",
+    source: "database",
     wifiNetworks: [
       {
         id: "wifi-4",
@@ -180,6 +184,7 @@ export const demoPlaces: Place[] = [
     hours: "6:30 AM - 5:30 PM",
     verifiedAt: "2026-07-19",
     verifiedBy: "Admin verified",
+    source: "database",
     wifiNetworks: [
       {
         id: "wifi-5",
@@ -219,6 +224,7 @@ export const demoPlaces: Place[] = [
     hours: "8:00 AM - 8:00 PM",
     verifiedAt: "2026-07-17",
     verifiedBy: "Admin verified",
+    source: "database",
     wifiNetworks: [
       {
         id: "wifi-6",

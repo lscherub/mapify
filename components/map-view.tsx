@@ -1,20 +1,21 @@
 "use client";
 
-import maplibregl, {
-  type Map as MapLibreMap,
-  type MapGeoJSONFeature,
-  type StyleSpecification
-} from "maplibre-gl";
+import maplibregl, { type Map as MapLibreMap, type MapGeoJSONFeature, type StyleSpecification } from "maplibre-gl";
 import { useEffect, useMemo, useRef } from "react";
 import { DEFAULT_ZOOM } from "@/lib/constants";
 import { type Place } from "@/lib/types";
 
 type Props = {
   places: Place[];
-  center: { latitude: number; longitude: number };
+  initialCenter: { latitude: number; longitude: number };
   selectedPlaceId?: string;
-  focusLocation?: { latitude: number; longitude: number } | null;
+  userLocation?: { latitude: number; longitude: number } | null;
+  recenterSignal: number;
   onSelectPlace: (placeId: string) => void;
+  onViewportChange?: (viewport: {
+    center: { latitude: number; longitude: number };
+    bounds: { west: number; south: number; east: number; north: number };
+  }) => void;
   onMapReady?: (map: MapLibreMap) => void;
 };
 
@@ -31,6 +32,7 @@ type GeoJsonFeatureCollection = {
       name: string;
       category: string;
       wifiFree: string;
+      source: string;
     };
   }>;
 };
@@ -53,13 +55,24 @@ const OSM_STYLE: StyleSpecification = {
       source: "osm"
     }
   ]
-} as const;
+};
 
-export function MapView({ places, center, selectedPlaceId, focusLocation, onSelectPlace, onMapReady }: Props) {
+export function MapView({
+  places,
+  initialCenter,
+  selectedPlaceId,
+  userLocation,
+  recenterSignal,
+  onSelectPlace,
+  onViewportChange,
+  onMapReady
+}: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const focusMarkerRef = useRef<maplibregl.Marker | null>(null);
   const geojsonRef = useRef<GeoJsonFeatureCollection>(buildGeoJson(places));
+  const userLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
+  const userMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const moveEndTimeoutRef = useRef<number | null>(null);
 
   const geojson = useMemo(() => buildGeoJson(places), [places]);
 
@@ -68,26 +81,29 @@ export function MapView({ places, center, selectedPlaceId, focusLocation, onSele
   }, [geojson]);
 
   useEffect(() => {
+    userLocationRef.current = userLocation ?? null;
+  }, [userLocation]);
+
+  useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: OSM_STYLE,
-      center: [center.longitude, center.latitude],
+      center: [initialCenter.longitude, initialCenter.latitude],
       zoom: DEFAULT_ZOOM,
       attributionControl: false
     });
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
-    map.addControl(new maplibregl.GeolocateControl({ trackUserLocation: false }), "bottom-right");
 
-    map.on("load", () => {
+      map.on("load", () => {
       map.addSource("places", {
         type: "geojson",
         data: geojsonRef.current,
         cluster: true,
-        clusterMaxZoom: 14,
-        clusterRadius: 48
+        clusterMaxZoom: 13,
+        clusterRadius: 44
       });
 
       map.addLayer({
@@ -97,8 +113,20 @@ export function MapView({ places, center, selectedPlaceId, focusLocation, onSele
         filter: ["has", "point_count"],
         paint: {
           "circle-color": "#111827",
-          "circle-opacity": 0.86,
-          "circle-radius": ["step", ["get", "point_count"], 20, 10, 24, 40, 30]
+          "circle-opacity": 0.82,
+          "circle-radius": ["step", ["get", "point_count"], 18, 10, 24, 30, 32]
+        }
+      });
+
+      map.addLayer({
+        id: "cluster-outline",
+        type: "circle",
+        source: "places",
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": "#ffffff",
+          "circle-opacity": 0.14,
+          "circle-radius": ["step", ["get", "point_count"], 24, 10, 30, 30, 38]
         }
       });
 
@@ -108,9 +136,37 @@ export function MapView({ places, center, selectedPlaceId, focusLocation, onSele
         source: "places",
         filter: ["!", ["has", "point_count"]],
         paint: {
-          "circle-color": ["case", ["==", ["get", "wifiFree"], "true"], "#2563EB", "#111827"],
+          "circle-color": ["case", ["==", ["get", "source"], "osm"], "#0F766E", "#2563EB"],
           "circle-radius": 10,
           "circle-stroke-width": 3,
+          "circle-stroke-color": "#ffffff"
+        }
+      });
+
+      map.addSource("user-location", {
+        type: "geojson",
+        data: buildUserLocationGeoJson(userLocationRef.current)
+      });
+
+      map.addLayer({
+        id: "user-location-glow",
+        type: "circle",
+        source: "user-location",
+        paint: {
+          "circle-color": "#2563EB",
+          "circle-opacity": 0.18,
+          "circle-radius": 18
+        }
+      });
+
+      map.addLayer({
+        id: "user-location-dot",
+        type: "circle",
+        source: "user-location",
+        paint: {
+          "circle-color": "#2563EB",
+          "circle-radius": 7,
+          "circle-stroke-width": 2,
           "circle-stroke-color": "#ffffff"
         }
       });
@@ -157,7 +213,28 @@ export function MapView({ places, center, selectedPlaceId, focusLocation, onSele
         map.getCanvas().style.cursor = "";
       });
 
+      map.on("moveend", () => {
+        if (moveEndTimeoutRef.current) {
+          window.clearTimeout(moveEndTimeoutRef.current);
+        }
+
+        moveEndTimeoutRef.current = window.setTimeout(() => {
+          const center = map.getCenter();
+          const bounds = map.getBounds();
+          onViewportChange?.({
+            center: { latitude: center.lat, longitude: center.lng },
+            bounds: {
+              west: bounds.getWest(),
+              south: bounds.getSouth(),
+              east: bounds.getEast(),
+              north: bounds.getNorth()
+            }
+          });
+        }, 100);
+      });
+
       onMapReady?.(map);
+      onViewportChange?.(emitViewport(map));
     });
 
     mapRef.current = map;
@@ -165,6 +242,9 @@ export function MapView({ places, center, selectedPlaceId, focusLocation, onSele
     return () => {
       map.remove();
       mapRef.current = null;
+      if (moveEndTimeoutRef.current) {
+        window.clearTimeout(moveEndTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -180,12 +260,13 @@ export function MapView({ places, center, selectedPlaceId, focusLocation, onSele
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    if (!map || !userLocation) return;
 
-    map.easeTo({
-      center: [center.longitude, center.latitude]
-    });
-  }, [center.latitude, center.longitude]);
+    const source = map.getSource("user-location") as maplibregl.GeoJSONSource | undefined;
+    if (source) {
+      source.setData(buildUserLocationGeoJson(userLocation));
+    }
+  }, [userLocation]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -203,23 +284,15 @@ export function MapView({ places, center, selectedPlaceId, focusLocation, onSele
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map) return;
+    const location = userLocationRef.current;
+    if (!map || !location) return;
 
-    if (!focusLocation) {
-      focusMarkerRef.current?.remove();
-      focusMarkerRef.current = null;
-      return;
-    }
-
-    const marker =
-      focusMarkerRef.current ??
-      new maplibregl.Marker({
-        color: "#2563EB"
-      });
-
-    marker.setLngLat([focusLocation.longitude, focusLocation.latitude]).addTo(map);
-    focusMarkerRef.current = marker;
-  }, [focusLocation]);
+    map.flyTo({
+      center: [location.longitude, location.latitude],
+      zoom: Math.max(map.getZoom(), DEFAULT_ZOOM),
+      speed: 1.2
+    });
+  }, [recenterSignal]);
 
   return <div ref={containerRef} className="absolute inset-0" />;
 }
@@ -237,8 +310,41 @@ function buildGeoJson(places: Place[]): GeoJsonFeatureCollection {
         placeId: place.id,
         name: place.name,
         category: place.category,
-        wifiFree: place.wifiFree ? "true" : "false"
+        wifiFree: place.wifiFree ? "true" : "false",
+        source: place.source
       }
     }))
+  };
+}
+
+function buildUserLocationGeoJson(location: { latitude: number; longitude: number } | null) {
+  return {
+    type: "FeatureCollection" as const,
+    features: location
+      ? [
+          {
+            type: "Feature" as const,
+            geometry: {
+              type: "Point" as const,
+              coordinates: [location.longitude, location.latitude] as [number, number]
+            },
+            properties: {}
+          }
+        ]
+      : []
+  };
+}
+
+function emitViewport(map: MapLibreMap) {
+  const center = map.getCenter();
+  const bounds = map.getBounds();
+  return {
+    center: { latitude: center.lat, longitude: center.lng },
+    bounds: {
+      west: bounds.getWest(),
+      south: bounds.getSouth(),
+      east: bounds.getEast(),
+      north: bounds.getNorth()
+    }
   };
 }

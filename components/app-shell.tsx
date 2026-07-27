@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { LocateFixed, Menu, ShieldAlert } from "lucide-react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
@@ -13,13 +13,27 @@ import { MapView } from "@/components/map-view";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useFavorites } from "@/lib/favorites";
 import { attachDistances, filterPlaces } from "@/lib/place-utils";
-import { getBrowserLocation } from "@/lib/location";
+import { getBrowserLocation, watchBrowserLocation } from "@/lib/location";
+import { METRO_VANCOUVER_BOUNDS, VANCOUVER_CENTER } from "@/lib/constants";
 import { type Place, type PlaceFilters, type Suggestion } from "@/lib/types";
-import { VANCOUVER_CENTER } from "@/lib/constants";
 
 type Props = {
   initialPlaces: Place[];
 };
+
+type Viewport = {
+  center: { latitude: number; longitude: number };
+  bounds: { west: number; south: number; east: number; north: number };
+};
+
+function toViewportBounds(bounds: typeof METRO_VANCOUVER_BOUNDS) {
+  return {
+    west: bounds.westLng,
+    south: bounds.southLat,
+    east: bounds.eastLng,
+    north: bounds.northLat
+  };
+}
 
 export function AppShell({ initialPlaces }: Props) {
   const [query, setQuery] = useState("");
@@ -30,19 +44,18 @@ export function AppShell({ initialPlaces }: Props) {
     favoritesOnly: false
   });
   const [selectedPlaceId, setSelectedPlaceId] = useState<string | undefined>();
-  const [focusLocation, setFocusLocation] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [center, setCenter] = useState(VANCOUVER_CENTER);
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [viewport, setViewport] = useState<Viewport>({
+    center: VANCOUVER_CENTER,
+    bounds: toViewportBounds(METRO_VANCOUVER_BOUNDS)
+  });
+  const [osmPlaces, setOsmPlaces] = useState<Place[]>([]);
   const [menuOpen, setMenuOpen] = useState(true);
   const [isDesktop, setIsDesktop] = useState(false);
+  const [recenterSignal, setRecenterSignal] = useState(0);
+  const [locationReady, setLocationReady] = useState(false);
 
   const { favorites, isFavorite, toggleFavorite } = useFavorites();
-
-  useEffect(() => {
-    void (async () => {
-      const location = await getBrowserLocation();
-      setCenter(location);
-    })();
-  }, []);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(min-width: 1024px)");
@@ -54,14 +67,82 @@ export function AppShell({ initialPlaces }: Props) {
     return () => mediaQuery.removeEventListener("change", update);
   }, []);
 
+  useEffect(() => {
+    let stopped = false;
+
+    void (async () => {
+      const location = await getBrowserLocation();
+      if (stopped) return;
+
+      setUserLocation(location);
+      setViewport((current) => ({
+        ...current,
+        center: location
+      }));
+      setLocationReady(true);
+    })();
+
+    const stopWatching = watchBrowserLocation(
+      (location) => {
+        setUserLocation(location);
+        setLocationReady(true);
+      },
+      (fallback) => {
+        setUserLocation(fallback);
+        setViewport((current) => ({
+          ...current,
+          center: fallback
+        }));
+        setLocationReady(true);
+      }
+    );
+
+    return () => {
+      stopped = true;
+      stopWatching();
+    };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    void (async () => {
+      try {
+        const params = new URLSearchParams({
+          bbox: `${viewport.bounds.west},${viewport.bounds.south},${viewport.bounds.east},${viewport.bounds.north}`,
+          lat: String(userLocation?.latitude ?? viewport.center.latitude),
+          lng: String(userLocation?.longitude ?? viewport.center.longitude)
+        });
+
+        const response = await fetch(`/api/osm/nearby?${params.toString()}`, {
+          signal: controller.signal
+        });
+        if (!response.ok) return;
+
+        const json = (await response.json()) as { places?: Place[] };
+        setOsmPlaces(dedupePlaces([...(json.places ?? [])]));
+      } catch {
+        // Keep the last successful OSM results if the network is flaky.
+      }
+    })();
+
+    return () => controller.abort();
+  }, [userLocation?.latitude, userLocation?.longitude, viewport.bounds.east, viewport.bounds.north, viewport.bounds.south, viewport.bounds.west, viewport.center.latitude, viewport.center.longitude]);
+
+  const allPlaces = useMemo(() => dedupePlaces([...initialPlaces, ...osmPlaces]), [initialPlaces, osmPlaces]);
+
+  const searchBias = userLocation ?? viewport.center;
+
   const filteredPlaces = useMemo(() => {
-    const data = filterPlaces(initialPlaces, query, filters);
-    const withDistances = attachDistances(data, center);
+    const data = filterPlaces(allPlaces, query, filters);
+    const withDistances = attachDistances(data, searchBias);
+
     if (filters.favoritesOnly) {
       return withDistances.filter((place) => favorites.includes(place.id));
     }
+
     return withDistances;
-  }, [center, filters, favorites, initialPlaces, query]);
+  }, [allPlaces, favorites, filters, query, searchBias]);
 
   useEffect(() => {
     if (filteredPlaces.length === 0) {
@@ -80,20 +161,45 @@ export function AppShell({ initialPlaces }: Props) {
     }
   }, [filteredPlaces, isDesktop, selectedPlaceId]);
 
-  const selectedPlace = isDesktop
-    ? filteredPlaces.find((place) => place.id === selectedPlaceId) ?? filteredPlaces[0] ?? null
-    : filteredPlaces.find((place) => place.id === selectedPlaceId) ?? null;
+  const selectedPlace = filteredPlaces.find((place) => place.id === selectedPlaceId) ?? null;
 
   const onSelectSuggestion = (suggestion: Suggestion) => {
     setQuery(suggestion.title);
-    if (typeof suggestion.latitude === "number" && typeof suggestion.longitude === "number") {
-      setCenter({ latitude: suggestion.latitude, longitude: suggestion.longitude });
-      setFocusLocation({ latitude: suggestion.latitude, longitude: suggestion.longitude });
+
+    if (suggestion.place) {
+      upsertPlace(setOsmPlaces, suggestion.place);
+      setSelectedPlaceId(suggestion.place.id);
+      setViewport((current) => ({
+        ...current,
+        center: {
+          latitude: suggestion.place?.latitude ?? current.center.latitude,
+          longitude: suggestion.place?.longitude ?? current.center.longitude
+        }
+      }));
+      return;
     }
-    setSelectedPlaceId(undefined);
+
+    if (typeof suggestion.latitude === "number" && typeof suggestion.longitude === "number") {
+      const latitude = suggestion.latitude;
+      const longitude = suggestion.longitude;
+      setViewport((current) => ({
+        ...current,
+        center: { latitude, longitude }
+      }));
+      setSelectedPlaceId(undefined);
+    }
   };
 
   const nearbyPreview = useMemo(() => filteredPlaces.slice(0, 6), [filteredPlaces]);
+
+  const locateMe = async () => {
+    const location = userLocation ?? (await getBrowserLocation());
+    setViewport((current) => ({
+      ...current,
+      center: location
+    }));
+    setRecenterSignal((value) => value + 1);
+  };
 
   return (
     <main className="relative min-h-dvh overflow-hidden">
@@ -102,10 +208,12 @@ export function AppShell({ initialPlaces }: Props) {
       <section className="map-shell">
         <MapView
           places={filteredPlaces}
-          center={center}
+          initialCenter={viewport.center}
           selectedPlaceId={selectedPlace?.id}
-          focusLocation={focusLocation}
+          userLocation={userLocation}
+          recenterSignal={recenterSignal}
           onSelectPlace={setSelectedPlaceId}
+          onViewportChange={(nextViewport) => setViewport(nextViewport)}
         />
 
         <div className="pointer-events-none absolute inset-0">
@@ -122,17 +230,17 @@ export function AppShell({ initialPlaces }: Props) {
                   </p>
                   <h1 className="mt-2 text-3xl font-semibold tracking-tight">Find WiFi that works.</h1>
                   <p className="mt-2 max-w-sm text-sm leading-6 text-muted-foreground">
-                    Discover cafes, libraries, and coworking spots across Metro Vancouver with fast
-                    WiFi, notes, and one-tap password copy.
+                    Discover cafes, libraries, coworking spots, and nearby businesses across Metro
+                    Vancouver with live GPS, Wi-Fi notes, and one-tap password copy.
                   </p>
                 </div>
-                <Badge variant="accent">Beta</Badge>
+                <Badge variant="accent">{locationReady ? "Live GPS" : "Locating..."}</Badge>
               </div>
 
               <div className="mt-5 space-y-3">
                 <SearchBar
                   value={query}
-                  bias={center}
+                  bias={searchBias}
                   onChange={setQuery}
                   onSelectSuggestion={onSelectSuggestion}
                 />
@@ -140,18 +248,9 @@ export function AppShell({ initialPlaces }: Props) {
               </div>
 
               <div className="mt-5 flex items-center gap-2">
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={async () => {
-                    const location = await getBrowserLocation();
-                    setCenter(location);
-                    setFocusLocation(null);
-                  }}
-                >
+                <Button type="button" variant="outline" size="sm" onClick={locateMe}>
                   <LocateFixed className="h-4 w-4" />
-                  Use my location
+                  Locate Me
                 </Button>
                 <ThemeToggle />
                 <Button type="button" variant="ghost" size="icon" onClick={() => setMenuOpen((value) => !value)}>
@@ -175,7 +274,7 @@ export function AppShell({ initialPlaces }: Props) {
                   </div>
                   <Badge variant="default">
                     <ShieldAlert className="mr-1 h-3.5 w-3.5" />
-                    Demo data
+                    OSM + DB
                   </Badge>
                 </div>
                 <div className="mt-4 max-h-[calc(100dvh-420px)] overflow-y-auto pr-1">
@@ -215,7 +314,7 @@ export function AppShell({ initialPlaces }: Props) {
               <div className="mt-4 space-y-3">
                 <SearchBar
                   value={query}
-                  bias={center}
+                  bias={searchBias}
                   onChange={setQuery}
                   onSelectSuggestion={onSelectSuggestion}
                 />
@@ -225,18 +324,9 @@ export function AppShell({ initialPlaces }: Props) {
               </div>
 
               <div className="mt-4 flex items-center justify-between">
-                <Button
-                  type="button"
-                  variant="secondary"
-                  size="sm"
-                  onClick={async () => {
-                    const location = await getBrowserLocation();
-                    setCenter(location);
-                    setFocusLocation(null);
-                  }}
-                >
+                <Button type="button" variant="secondary" size="sm" onClick={locateMe}>
                   <LocateFixed className="h-4 w-4" />
-                  Locate me
+                  Locate Me
                 </Button>
                 <Badge variant="default">{filteredPlaces.length} results</Badge>
               </div>
@@ -282,4 +372,23 @@ export function AppShell({ initialPlaces }: Props) {
       </section>
     </main>
   );
+}
+
+function dedupePlaces(places: Place[]) {
+  const seen = new Set<string>();
+  return places.filter((place) => {
+    if (seen.has(place.id)) return false;
+    seen.add(place.id);
+    return true;
+  });
+}
+
+function upsertPlace(setPlaces: Dispatch<SetStateAction<Place[]>>, place: Place) {
+  setPlaces((current) => {
+    const exists = current.some((entry) => entry.id === place.id);
+    if (exists) {
+      return current.map((entry) => (entry.id === place.id ? place : entry));
+    }
+    return [...current, place];
+  });
 }

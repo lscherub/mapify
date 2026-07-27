@@ -1,5 +1,6 @@
-import { buildSuggestions } from "@/lib/place-utils";
-import { METRO_VANCOUVER_BOUNDS, VANCOUVER_CENTER } from "@/lib/constants";
+import { VANCOUVER_CENTER } from "@/lib/constants";
+import { buildSuggestions, haversineKm } from "@/lib/place-utils";
+import { searchOsmSuggestions } from "@/lib/osm";
 import { type Place, type Suggestion } from "@/lib/types";
 
 export async function getAutocompleteSuggestions(
@@ -7,70 +8,56 @@ export async function getAutocompleteSuggestions(
   query: string,
   bias?: { latitude: number; longitude: number } | null
 ) {
-  if (!query.trim()) {
-    return buildSuggestions(places, query);
+  const trimmed = query.trim();
+  const focus = bias ?? VANCOUVER_CENTER;
+
+  const localSuggestions = buildSuggestions(places, trimmed).map((suggestion) => ({
+    ...suggestion,
+    source: "database" as const,
+    place: places.find((place) => place.id === suggestion.id)
+  }));
+
+  if (!trimmed) {
+    return rankSuggestions(localSuggestions, focus).slice(0, 8);
   }
 
-  const provider = process.env.AUTOCOMPLETE_PROVIDER?.toLowerCase() ?? "opencage";
+  const [osmSuggestions] = await Promise.all([searchOsmSuggestions(trimmed, focus)]);
+  const merged = [...localSuggestions, ...osmSuggestions];
 
-  if (provider === "opencage" && process.env.OPENCAGE_API_KEY) {
-    try {
-      return await fetchOpenCageSuggestions(query, bias ?? VANCOUVER_CENTER);
-    } catch {
-      return buildSuggestions(places, query);
-    }
-  }
-
-  return buildSuggestions(places, query);
+  return dedupeSuggestions(rankSuggestions(merged, focus)).slice(0, 8);
 }
 
-async function fetchOpenCageSuggestions(
-  query: string,
-  bias: { latitude: number; longitude: number }
-): Promise<Suggestion[]> {
-  const key = process.env.OPENCAGE_API_KEY;
-  if (!key || !query.trim()) return [];
+function rankSuggestions(
+  suggestions: Array<Suggestion & { place?: Place }>,
+  focus: { latitude: number; longitude: number }
+) {
+  return [...suggestions].sort((a, b) => {
+    const aScore = scoreSuggestion(a, focus);
+    const bScore = scoreSuggestion(b, focus);
+    return aScore - bScore;
+  });
+}
 
-  const url = new URL("https://api.opencagedata.com/geocode/v1/json");
-  url.searchParams.set("q", query);
-  url.searchParams.set("key", key);
-  url.searchParams.set("limit", "6");
-  url.searchParams.set("countrycode", "ca");
-  url.searchParams.set("pretty", "0");
-  url.searchParams.set("no_annotations", "1");
-  url.searchParams.set("language", "en");
-  url.searchParams.set("proximity", `${bias.longitude},${bias.latitude}`);
-  url.searchParams.set(
-    "bounds",
-    `${METRO_VANCOUVER_BOUNDS.westLng},${METRO_VANCOUVER_BOUNDS.southLat},${METRO_VANCOUVER_BOUNDS.eastLng},${METRO_VANCOUVER_BOUNDS.northLat}`
-  );
+function scoreSuggestion(
+  suggestion: Suggestion & { place?: Place },
+  focus: { latitude: number; longitude: number }
+) {
+  const place = suggestion.place;
+  if (!place || typeof place.latitude !== "number" || typeof place.longitude !== "number") {
+    return 1000;
+  }
 
-  const response = await fetch(url.toString(), { next: { revalidate: 300 } });
-  if (!response.ok) return [];
+  const distance = haversineKm(focus, place);
+  const queryBoost = suggestion.source === "database" ? -0.15 : 0;
+  return distance + queryBoost;
+}
 
-  const text = await response.text();
-  if (!text.trim()) return [];
-
-  const json = JSON.parse(text) as {
-    results?: Array<{
-      formatted: string;
-      geometry?: { lat: number; lng: number };
-      components?: { city?: string; town?: string; suburb?: string; county?: string };
-    }>;
-  };
-  return (json.results ?? []).map(
-    (result) => ({
-      id: result.formatted,
-      title: result.formatted,
-      subtitle:
-        result.components?.city ??
-        result.components?.town ??
-        result.components?.suburb ??
-        result.components?.county ??
-        "OpenCage result",
-      latitude: result.geometry?.lat,
-      longitude: result.geometry?.lng,
-      type: "address" as const
-    })
-  );
+function dedupeSuggestions(suggestions: Array<Suggestion & { place?: Place }>) {
+  const seen = new Set<string>();
+  return suggestions.filter((suggestion) => {
+    const key = `${suggestion.title.toLowerCase()}::${suggestion.subtitle.toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }

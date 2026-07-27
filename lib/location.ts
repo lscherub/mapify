@@ -21,3 +21,31 @@ export async function getBrowserLocation(): Promise<{ latitude: number; longitud
     );
   });
 }
+
+export function watchBrowserLocation(
+  onUpdate: (location: { latitude: number; longitude: number }) => void,
+  onFallback?: (location: { latitude: number; longitude: number }) => void
+) {
+  if (typeof window === "undefined" || !("geolocation" in navigator)) {
+    onFallback?.(VANCOUVER_CENTER);
+    return () => undefined;
+  }
+
+  const id = navigator.geolocation.watchPosition(
+    (position) =>
+      onUpdate({
+        latitude: position.coords.latitude,
+        longitude: position.coords.longitude
+      }),
+    () => {
+      onFallback?.(VANCOUVER_CENTER);
+    },
+    {
+      enableHighAccuracy: true,
+      maximumAge: 10000,
+      timeout: 12000
+    }
+  );
+
+  return () => navigator.geolocation.clearWatch(id);
+}

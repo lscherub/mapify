@@ -67,6 +67,9 @@ export function PlaceList({ places, selectedPlaceId, favoriteIds, onSelect, onTo
                   {place.wifiFree ? "Free WiFi" : "Paid / gated"}
                 </Badge>
                 <Badge variant="default">{place.category}</Badge>
+                <Badge variant={place.source === "osm" ? "accent" : "default"}>
+                  {place.source === "osm" ? "OSM" : "DB"}
+                </Badge>
                 <Badge variant="accent">{formatDistance(place.distanceKm)}</Badge>
               </div>
             </div>

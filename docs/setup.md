@@ -16,16 +16,26 @@ Create `.env.local` from `.env.example` and fill in:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `AUTOCOMPLETE_PROVIDER`
+- `AUTOCOMPLETE_PROVIDER=opencage` for the free OpenStreetMap/OpenCage path
 - `OPENCAGE_API_KEY` for free geocoding autocomplete
+- `ADMIN_ROUTE_SLUG`
+- `ADMIN_USERNAME`
+- `ADMIN_PASSWORD_HASH`
+- `ADMIN_SESSION_SECRET`
+
+You do not need a Google Maps key for this version. The map uses MapLibre with OpenStreetMap tiles, and autocomplete/search uses OpenCage plus OpenStreetMap/Nominatim. No paid Mapbox plan is required.
 
 ## 3) Where to plug in APIs
 
-- `app/api/suggest/route.ts` is the place to connect a real autocomplete provider.
-- `lib/autocomplete.ts` contains the provider switch and fallback logic.
+- `app/api/suggest/route.ts` is the public autocomplete endpoint.
+- `lib/autocomplete.ts` merges database suggestions with OpenStreetMap/OpenCage matches.
+- `lib/osm.ts` contains the OpenStreetMap/Nominatim/OpenCage search logic and nearby business fetches.
+- `app/api/osm/nearby/route.ts` powers the map's on-screen nearby place loading.
 - `lib/supabase/server.ts` and `lib/supabase/browser.ts` are the Supabase clients.
-- `lib/data.ts` is the query layer that currently falls back to demo data if Supabase is not configured.
-- `app/api/health/route.ts` is a simple route you can expand for monitoring.
+- `lib/data.ts` is the query layer that falls back to demo data if Supabase is not configured.
+- `app/api/admin/places/route.ts` and `app/api/admin/places/[id]/route.ts` handle create, update, and delete.
+- `app/api/admin/import/route.ts` and `app/api/admin/export/route.ts` handle CSV upload/download.
+- `app/[adminSlug]/page.tsx` is the hidden admin entry point. The slug comes from `ADMIN_ROUTE_SLUG`.
 
 ## 4) Deployment on Vercel
 
@@ -35,16 +45,21 @@ Create `.env.local` from `.env.example` and fill in:
 4. Deploy.
 5. If you later change Supabase schema or env vars, redeploy after saving the updates.
 
-## 5) PWA notes
+## 5) Hidden admin route
+
+1. Visit the secret route shown in `ADMIN_ROUTE_SLUG`.
+2. Sign in with `ADMIN_USERNAME` and your saved password.
+3. Use the dashboard to add, edit, delete, import, and export locations.
+
+## 6) PWA notes
 
 - The app manifest is in `app/manifest.ts`.
 - The app icons are generated in `app/icon.tsx` and `app/apple-icon.tsx`.
 - The service worker is in `public/sw.js`.
 - The offline fallback page is `app/offline/page.tsx`.
 
-## 6) What I still need from you later
+## 7) What I still need from you later
 
-- A real autocomplete provider choice if you want something other than OpenCage.
-- Supabase project credentials.
+- Any real Supabase schema changes after the MVP.
 - Real place data for Metro Vancouver.
-- Any admin auth preference if you want the dashboard next.
+- Any extra fields you want in the admin form.
