@@ -59,8 +59,14 @@ export async function getPlaces(): Promise<Place[]> {
           access_type,
           instructions,
           is_active,
+          verification_status,
           verified_at,
-          verified_by
+          verified_by,
+          download_mbps,
+          upload_mbps,
+          latency_ms,
+          jitter_ms,
+          speed_tested_at
         ),
         photos (
           id,
@@ -139,8 +145,14 @@ function mapRawPlaces(data: Array<Record<string, any>>): Place[] {
       isPrimary: Boolean(network.is_primary ?? (idx === 0)),
       accessType: network.access_type || (place.wifi_free ? "free" : "purchase_required"),
       instructions: network.instructions || undefined,
+      verificationStatus: network.verification_status || (network.verified_at ? "verified" : "unverified"),
       verifiedAt: network.verified_at,
       verifiedBy: network.verified_by,
+      downloadMbps: network.download_mbps ? Number(network.download_mbps) : null,
+      uploadMbps: network.upload_mbps ? Number(network.upload_mbps) : null,
+      latencyMs: network.latency_ms ? Number(network.latency_ms) : null,
+      jitterMs: network.jitter_ms ? Number(network.jitter_ms) : null,
+      speedTestedAt: network.speed_tested_at || null,
       isActive: true
     }));
 

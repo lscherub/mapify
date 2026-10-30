@@ -10,9 +10,16 @@ export const adminWifiNetworkSchema = z.object({
   accessType: z.enum(["free", "paid", "purchase_required", "customers_only", "unknown", "none"]).default("free"),
   instructions: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
-  isActive: z.boolean().default(true),
+  verificationStatus: z.enum(["unverified", "pending", "verified", "rejected", "expired"]).default("unverified"),
+  verificationNotes: z.string().nullable().optional(),
   verifiedAt: z.string().nullable().optional(),
-  verifiedBy: z.string().nullable().optional()
+  verifiedBy: z.string().nullable().optional(),
+  downloadMbps: z.coerce.number().nullable().optional(),
+  uploadMbps: z.coerce.number().nullable().optional(),
+  latencyMs: z.coerce.number().nullable().optional(),
+  jitterMs: z.coerce.number().nullable().optional(),
+  speedTestedAt: z.string().nullable().optional(),
+  isActive: z.boolean().default(true)
 });
 
 export const adminPlaceFormSchema = z.object({
@@ -147,9 +154,16 @@ export function emptyWifiNetworkInput(): AdminWifiNetworkInput {
     accessType: "free",
     instructions: "",
     notes: "",
-    isActive: true,
-    verifiedAt: new Date().toISOString().slice(0, 10),
-    verifiedBy: "Admin verified"
+    verificationStatus: "unverified",
+    verificationNotes: "",
+    verifiedAt: "",
+    verifiedBy: "Admin verified",
+    downloadMbps: null,
+    uploadMbps: null,
+    latencyMs: null,
+    jitterMs: null,
+    speedTestedAt: null,
+    isActive: true
   };
 }
 
@@ -231,9 +245,16 @@ export function placeToAdminFormValues(place: Place): AdminPlaceFormValues {
       accessType: net.accessType ?? (place.wifiFree ? "free" : "purchase_required"),
       instructions: net.instructions ?? "",
       notes: net.notes ?? "",
-      isActive: net.isActive !== false,
+      verificationStatus: net.verificationStatus ?? (net.verifiedAt ? "verified" : "unverified"),
+      verificationNotes: net.verificationNotes ?? "",
       verifiedAt: net.verifiedAt ?? place.verifiedAt ?? "",
-      verifiedBy: net.verifiedBy ?? place.verifiedBy ?? "Admin verified"
+      verifiedBy: net.verifiedBy ?? place.verifiedBy ?? "Admin verified",
+      downloadMbps: net.downloadMbps ?? null,
+      uploadMbps: net.uploadMbps ?? null,
+      latencyMs: net.latencyMs ?? null,
+      jitterMs: net.jitterMs ?? null,
+      speedTestedAt: net.speedTestedAt ?? null,
+      isActive: net.isActive !== false
     }))
   };
 }

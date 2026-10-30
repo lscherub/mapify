@@ -10,7 +10,10 @@ import {
   type Place,
   type AdminPlaceFormValues,
   type AdminWifiNetworkInput,
-  type DuplicateCheckMatch
+  type DuplicateCheckMatch,
+  type WifiSpeedTest,
+  type WifiSubmission,
+  type WifiVerificationStatus
 } from "@/lib/types";
 
 const CSV_HEADERS = [
@@ -98,8 +101,15 @@ export async function fetchAdminPlaces(options?: FetchAdminPlacesOptions): Promi
       access_type,
       instructions,
       notes,
+      verification_status,
+      verification_notes,
       verified_at,
       verified_by,
+      download_mbps,
+      upload_mbps,
+      latency_ms,
+      jitter_ms,
+      speed_tested_at,
       is_active,
       created_at
     )
@@ -327,6 +337,13 @@ export async function createAdminPlace(
       access_type: net.accessType || (validatedForm.wifiFree ? "free" : "purchase_required"),
       instructions: net.instructions || null,
       notes: net.notes || null,
+      verification_status: net.verificationStatus || (net.verifiedAt ? "verified" : "unverified"),
+      verification_notes: net.verificationNotes || null,
+      download_mbps: net.downloadMbps || null,
+      upload_mbps: net.uploadMbps || null,
+      latency_ms: net.latencyMs || null,
+      jitter_ms: net.jitterMs || null,
+      speed_tested_at: net.speedTestedAt || null,
       is_active: net.isActive !== false,
       verified_at: net.verifiedAt || validatedForm.verifiedAt || new Date().toISOString().slice(0, 10),
       verified_by: net.verifiedBy || validatedForm.verifiedBy || "Admin verified"
@@ -436,13 +453,14 @@ export async function updateAdminPlace(
   if (placeError) throw new Error(placeError.message);
 
   // Reconcile Wi-Fi networks safely
-  // Fetch existing network IDs for this place
+  // Fetch existing network records for this place
   const { data: existingNets } = await client
     .from("wifi_networks")
-    .select("id")
+    .select("id, ssid, password, verification_status")
     .eq("place_id", id);
 
-  const existingIds = new Set((existingNets || []).map((n) => n.id));
+  const existingMap = new Map((existingNets || []).map((n) => [n.id, n]));
+  const existingIds = new Set(existingMap.keys());
   const currentNetworkIds = new Set(
     validatedForm.wifiNetworks.map((n) => n.id).filter(Boolean) as string[]
   );
@@ -456,6 +474,22 @@ export async function updateAdminPlace(
 
   // Upsert current networks
   for (const [index, net] of validatedForm.wifiNetworks.entries()) {
+    let verificationStatus = net.verificationStatus || "unverified";
+
+    // If an existing network had its SSID or password changed, reset its verification status!
+    if (net.id && existingMap.has(net.id)) {
+      const existingMatch = existingMap.get(net.id);
+      if (existingMatch) {
+        const ssidChanged = existingMatch.ssid !== net.ssid;
+        const passChanged = (existingMatch.password || null) !== (net.password || null);
+        if (ssidChanged || passChanged) {
+          if (existingMatch.verification_status === "verified") {
+            verificationStatus = "expired";
+          }
+        }
+      }
+    }
+
     const netPayload = {
       place_id: id,
       ssid: net.ssid,
@@ -465,9 +499,16 @@ export async function updateAdminPlace(
       access_type: net.accessType || (validatedForm.wifiFree ? "free" : "purchase_required"),
       instructions: net.instructions || null,
       notes: net.notes || null,
+      verification_status: verificationStatus,
+      verification_notes: net.verificationNotes || null,
+      download_mbps: net.downloadMbps || null,
+      upload_mbps: net.uploadMbps || null,
+      latency_ms: net.latencyMs || null,
+      jitter_ms: net.jitterMs || null,
+      speed_tested_at: net.speedTestedAt || null,
       is_active: net.isActive !== false,
-      verified_at: net.verifiedAt || validatedForm.verifiedAt || new Date().toISOString().slice(0, 10),
-      verified_by: net.verifiedBy || validatedForm.verifiedBy || "Admin verified"
+      verified_at: verificationStatus === "verified" ? (net.verifiedAt || new Date().toISOString().slice(0, 10)) : null,
+      verified_by: verificationStatus === "verified" ? (net.verifiedBy || "Admin verified") : null
     };
 
     if (net.id && existingIds.has(net.id)) {
@@ -607,8 +648,15 @@ function mapRowToPlace(row: Record<string, unknown>): Place {
     accessType: (wifi.access_type as any) ?? "free",
     instructions: wifi.instructions ? String(wifi.instructions) : null,
     notes: wifi.notes ? String(wifi.notes) : null,
+    verificationStatus: (wifi.verification_status as any) || (wifi.verified_at ? "verified" : "unverified"),
+    verificationNotes: wifi.verification_notes ? String(wifi.verification_notes) : null,
     verifiedAt: wifi.verified_at ? String(wifi.verified_at) : undefined,
     verifiedBy: wifi.verified_by ? String(wifi.verified_by) : undefined,
+    downloadMbps: wifi.download_mbps ? Number(wifi.download_mbps) : null,
+    uploadMbps: wifi.upload_mbps ? Number(wifi.upload_mbps) : null,
+    latencyMs: wifi.latency_ms ? Number(wifi.latency_ms) : null,
+    jitterMs: wifi.jitter_ms ? Number(wifi.jitter_ms) : null,
+    speedTestedAt: wifi.speed_tested_at ? String(wifi.speed_tested_at) : null,
     isActive: wifi.is_active !== false,
     createdAt: wifi.created_at ? String(wifi.created_at) : undefined
   }));
@@ -662,4 +710,299 @@ function mapRowToPlace(row: Record<string, unknown>): Place {
     },
     photos: []
   };
+}
+
+// ==========================================
+// Phase 5: Speed Testing Operations
+// ==========================================
+
+export async function fetchWifiSpeedTests(options?: {
+  placeId?: string;
+  wifiNetworkId?: string;
+  limit?: number;
+}): Promise<WifiSpeedTest[]> {
+  const client = createSupabaseAdminClient();
+  if (!client) return [];
+
+  let query = client
+    .from("wifi_speed_tests")
+    .select(`
+      id,
+      place_id,
+      wifi_network_id,
+      download_mbps,
+      upload_mbps,
+      latency_ms,
+      jitter_ms,
+      tested_at,
+      tested_by,
+      notes,
+      is_approved_for_public,
+      created_at,
+      places:place_id (name),
+      wifi_networks:wifi_network_id (ssid)
+    `)
+    .order("tested_at", { ascending: false });
+
+  if (options?.placeId) query = query.eq("place_id", options.placeId);
+  if (options?.wifiNetworkId) query = query.eq("wifi_network_id", options.wifiNetworkId);
+  if (options?.limit) query = query.limit(options.limit);
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  return data.map((row: any) => ({
+    id: row.id,
+    placeId: row.place_id,
+    wifiNetworkId: row.wifi_network_id,
+    downloadMbps: Number(row.download_mbps),
+    uploadMbps: Number(row.upload_mbps),
+    latencyMs: Number(row.latency_ms),
+    jitterMs: row.jitter_ms ? Number(row.jitter_ms) : null,
+    testedAt: row.tested_at,
+    testedBy: row.tested_by,
+    notes: row.notes || null,
+    isApprovedForPublic: Boolean(row.is_approved_for_public),
+    createdAt: row.created_at,
+    placeName: row.places?.name,
+    networkSsid: row.wifi_networks?.ssid
+  }));
+}
+
+export async function recordWifiSpeedTest(payload: {
+  placeId: string;
+  wifiNetworkId: string;
+  downloadMbps: number;
+  uploadMbps: number;
+  latencyMs: number;
+  jitterMs?: number | null;
+  testedBy: string;
+  notes?: string | null;
+  isApprovedForPublic?: boolean;
+}): Promise<WifiSpeedTest> {
+  const client = createSupabaseAdminClient();
+  if (!client) throw new Error("Missing Supabase service role key");
+
+  const isApproved = payload.isApprovedForPublic !== false;
+
+  // Insert historical record
+  const { data: test, error: insertError } = await client
+    .from("wifi_speed_tests")
+    .insert({
+      place_id: payload.placeId,
+      wifi_network_id: payload.wifiNetworkId,
+      download_mbps: payload.downloadMbps,
+      upload_mbps: payload.uploadMbps,
+      latency_ms: payload.latencyMs,
+      jitter_ms: payload.jitterMs ?? null,
+      tested_by: payload.testedBy,
+      notes: payload.notes || null,
+      is_approved_for_public: isApproved
+    })
+    .select()
+    .single();
+
+  if (insertError) throw new Error(insertError.message);
+
+  // If approved for public, update the latest summary on wifi_networks
+  if (isApproved) {
+    await client
+      .from("wifi_networks")
+      .update({
+        download_mbps: payload.downloadMbps,
+        upload_mbps: payload.uploadMbps,
+        latency_ms: payload.latencyMs,
+        jitter_ms: payload.jitterMs ?? null,
+        speed_tested_at: test.tested_at
+      })
+      .eq("id", payload.wifiNetworkId);
+  }
+
+  return {
+    id: test.id,
+    placeId: test.place_id,
+    wifiNetworkId: test.wifi_network_id,
+    downloadMbps: Number(test.download_mbps),
+    uploadMbps: Number(test.upload_mbps),
+    latencyMs: Number(test.latency_ms),
+    jitterMs: test.jitter_ms ? Number(test.jitter_ms) : null,
+    testedAt: test.tested_at,
+    testedBy: test.tested_by,
+    notes: test.notes,
+    isApprovedForPublic: Boolean(test.is_approved_for_public),
+    createdAt: test.created_at
+  };
+}
+
+// ==========================================
+// Phase 5: Network Verification Operations
+// ==========================================
+
+export async function verifyWifiNetwork(
+  networkId: string,
+  payload: {
+    status: WifiVerificationStatus;
+    notes?: string | null;
+    verifiedBy: string;
+  }
+): Promise<void> {
+  const client = createSupabaseAdminClient();
+  if (!client) throw new Error("Missing Supabase service role key");
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  const { data: network, error: netError } = await client
+    .from("wifi_networks")
+    .update({
+      verification_status: payload.status,
+      verification_notes: payload.notes || null,
+      verified_at: payload.status === "verified" ? todayStr : null,
+      verified_by: payload.status === "verified" ? payload.verifiedBy : null
+    })
+    .eq("id", networkId)
+    .select("place_id")
+    .single();
+
+  if (netError) throw new Error(netError.message);
+
+  // If verified, also ensure place has verified_at and verified_by populated
+  if (payload.status === "verified" && network?.place_id) {
+    await client
+      .from("places")
+      .update({
+        has_wifi: true,
+        verified_at: todayStr,
+        verified_by: payload.verifiedBy
+      })
+      .eq("id", network.place_id);
+  }
+}
+
+// ==========================================
+// Phase 5: Submission Review Queue Operations
+// ==========================================
+
+export async function fetchAdminSubmissions(
+  statusFilter?: "all" | "pending" | "approved" | "rejected"
+): Promise<WifiSubmission[]> {
+  const client = createSupabaseAdminClient();
+  if (!client) return [];
+
+  let query = client
+    .from("wifi_submissions")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (statusFilter && statusFilter !== "all") {
+    query = query.eq("status", statusFilter);
+  }
+
+  const { data, error } = await query;
+  if (error || !data) return [];
+
+  return data.map((row: any) => ({
+    id: row.id,
+    placeId: row.place_id,
+    placeName: row.place_name,
+    placeAddress: row.place_address,
+    latitude: row.latitude ? Number(row.latitude) : undefined,
+    longitude: row.longitude ? Number(row.longitude) : undefined,
+    ssid: row.ssid,
+    password: row.password,
+    accessType: row.access_type,
+    instructions: row.instructions,
+    notes: row.notes,
+    adminNotes: row.admin_notes,
+    status: row.status,
+    submittedFromIp: row.submitted_from_ip,
+    reviewedAt: row.reviewed_at,
+    reviewedBy: row.reviewed_by,
+    createdAt: row.created_at
+  }));
+}
+
+export async function approveWifiSubmission(
+  submissionId: string,
+  reviewerEmail: string,
+  adminNotes?: string | null,
+  targetNetworkId?: string
+): Promise<void> {
+  const client = createSupabaseAdminClient();
+  if (!client) throw new Error("Missing Supabase service role key");
+
+  const { data: sub, error: subError } = await client
+    .from("wifi_submissions")
+    .select("*")
+    .eq("id", submissionId)
+    .single();
+
+  if (subError || !sub) throw new Error("Submission not found");
+
+  const todayStr = new Date().toISOString().slice(0, 10);
+
+  if (targetNetworkId) {
+    // Update existing network
+    await client
+      .from("wifi_networks")
+      .update({
+        ssid: sub.ssid,
+        password: sub.password || null,
+        access_type: sub.access_type || "free",
+        instructions: sub.instructions || null,
+        notes: sub.notes || null,
+        verification_status: "verified",
+        verified_at: todayStr,
+        verified_by: reviewerEmail,
+        is_active: true
+      })
+      .eq("id", targetNetworkId);
+  } else if (sub.place_id) {
+    // Insert new network into venue
+    await client.from("wifi_networks").insert({
+      place_id: sub.place_id,
+      ssid: sub.ssid,
+      password: sub.password || null,
+      network_type: "primary",
+      is_primary: true,
+      access_type: sub.access_type || "free",
+      instructions: sub.instructions || null,
+      notes: sub.notes || null,
+      verification_status: "verified",
+      verified_at: todayStr,
+      verified_by: reviewerEmail,
+      is_active: true
+    });
+  }
+
+  // Update submission record
+  await client
+    .from("wifi_submissions")
+    .update({
+      status: "approved",
+      reviewed_at: new Date().toISOString(),
+      reviewed_by: reviewerEmail,
+      admin_notes: adminNotes || null
+    })
+    .eq("id", submissionId);
+}
+
+export async function rejectWifiSubmission(
+  submissionId: string,
+  reviewerEmail: string,
+  adminNotes: string
+): Promise<void> {
+  const client = createSupabaseAdminClient();
+  if (!client) throw new Error("Missing Supabase service role key");
+
+  const { error } = await client
+    .from("wifi_submissions")
+    .update({
+      status: "rejected",
+      reviewed_at: new Date().toISOString(),
+      reviewed_by: reviewerEmail,
+      admin_notes: adminNotes || "Submission rejected by administrator."
+    })
+    .eq("id", submissionId);
+
+  if (error) throw new Error(error.message);
 }

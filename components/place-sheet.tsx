@@ -3,12 +3,14 @@
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Activity,
   AlertCircle,
   ChevronDown,
   ChevronUp,
   Copy,
   ExternalLink,
   Eye,
+  Gauge,
   Globe,
   Loader2,
   Lock,
@@ -20,7 +22,8 @@ import {
   ShieldCheck,
   Unlock,
   Wifi,
-  X
+  X,
+  Zap
 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -430,6 +433,60 @@ export function PlaceSheet({
                       </div>
                     )}
                   </div>
+
+                  {/* Verified Speed Benchmark if available */}
+                  {activeNetwork.downloadMbps ? (
+                    <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/5 p-3 space-y-1.5">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-bold text-foreground flex items-center gap-1.5">
+                          <Zap className="h-3.5 w-3.5 text-emerald-500 fill-current" />
+                          Verified Speed Benchmark
+                        </span>
+                        {activeNetwork.speedTestedAt && (
+                          <span className="text-[10px] text-muted-foreground">
+                            {new Date(activeNetwork.speedTestedAt).toLocaleDateString(undefined, {
+                              month: "short",
+                              year: "numeric"
+                            })}
+                          </span>
+                        )}
+                      </div>
+                      <div className="grid grid-cols-3 gap-2 pt-1 text-center font-mono">
+                        <div className="rounded-lg bg-background/80 p-2 border border-border/40">
+                          <span className="text-[9px] uppercase text-muted-foreground block font-sans">
+                            Download
+                          </span>
+                          <span className="text-sm font-black text-emerald-600 dark:text-emerald-400">
+                            {activeNetwork.downloadMbps}
+                            <span className="text-[9px] font-normal text-muted-foreground ml-0.5">M</span>
+                          </span>
+                        </div>
+                        <div className="rounded-lg bg-background/80 p-2 border border-border/40">
+                          <span className="text-[9px] uppercase text-muted-foreground block font-sans">
+                            Upload
+                          </span>
+                          <span className="text-sm font-bold text-foreground">
+                            {activeNetwork.uploadMbps ?? "--"}
+                            <span className="text-[9px] font-normal text-muted-foreground ml-0.5">M</span>
+                          </span>
+                        </div>
+                        <div className="rounded-lg bg-background/80 p-2 border border-border/40">
+                          <span className="text-[9px] uppercase text-muted-foreground block font-sans">
+                            Latency
+                          </span>
+                          <span className="text-sm font-bold text-muted-foreground">
+                            {activeNetwork.latencyMs ?? "--"}
+                            <span className="text-[9px] font-normal text-muted-foreground ml-0.5">ms</span>
+                          </span>
+                        </div>
+                      </div>
+                      {typeof activeNetwork.jitterMs === "number" && (
+                        <p className="text-[10px] text-muted-foreground text-center pt-0.5">
+                          Low jitter ({activeNetwork.jitterMs}ms) • Reliable for video calls & remote work
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
 
                   {/* Verification Info */}
                   <div className="flex items-center justify-between text-[11px] text-muted-foreground px-1 pt-1">

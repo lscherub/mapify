@@ -23,6 +23,7 @@ export type AmenityFlags = {
 
 export type WifiAccessType = "free" | "paid" | "purchase_required" | "customers_only" | "unknown" | "none";
 export type WifiNetworkType = "primary" | "guest" | "staff" | "customer" | "other" | string;
+export type WifiVerificationStatus = "unverified" | "pending" | "verified" | "rejected" | "expired";
 
 export type WifiNetwork = {
   id: string;
@@ -33,8 +34,15 @@ export type WifiNetwork = {
   accessType?: WifiAccessType;
   instructions?: string | null;
   notes?: string | null;
+  verificationStatus?: WifiVerificationStatus;
+  verificationNotes?: string | null;
   verifiedAt?: string;
   verifiedBy?: string;
+  downloadMbps?: number | null;
+  uploadMbps?: number | null;
+  latencyMs?: number | null;
+  jitterMs?: number | null;
+  speedTestedAt?: string | null;
   isActive?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -115,8 +123,30 @@ export type WifiSubmission = {
   accessType: WifiAccessType;
   instructions?: string;
   notes?: string;
+  adminNotes?: string | null;
   status?: "pending" | "in_review" | "approved" | "rejected";
+  submittedFromIp?: string | null;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
   createdAt?: string;
+};
+
+export type WifiSpeedTest = {
+  id: string;
+  placeId: string;
+  wifiNetworkId: string;
+  downloadMbps: number;
+  uploadMbps: number;
+  latencyMs: number;
+  jitterMs?: number | null;
+  testedAt: string;
+  testedBy: string;
+  notes?: string | null;
+  isApprovedForPublic: boolean;
+  createdAt?: string;
+  // Enriched presentation fields
+  placeName?: string;
+  networkSsid?: string;
 };
 
 export type WifiCredentialResult =
@@ -144,9 +174,16 @@ export type AdminWifiNetworkInput = {
   accessType: WifiAccessType;
   instructions?: string | null;
   notes?: string | null;
-  isActive: boolean;
+  verificationStatus?: WifiVerificationStatus;
+  verificationNotes?: string | null;
   verifiedAt?: string | null;
   verifiedBy?: string | null;
+  downloadMbps?: number | null;
+  uploadMbps?: number | null;
+  latencyMs?: number | null;
+  jitterMs?: number | null;
+  speedTestedAt?: string | null;
+  isActive: boolean;
 };
 
 export type AdminPlaceFormValues = {
