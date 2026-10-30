@@ -1,8 +1,14 @@
 import { NextResponse } from "next/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { createAdminPlace, fetchAdminPlaces, importPlacesFromCsv } from "@/lib/admin-crud";
+import { getAuthenticatedAdmin } from "@/lib/admin-auth";
 
 export async function POST(request: Request) {
+  const adminSession = await getAuthenticatedAdmin();
+  if (!adminSession) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const client = createSupabaseAdminClient();
   if (!client) {
     return NextResponse.json({ error: "Missing Supabase service role key" }, { status: 500 });

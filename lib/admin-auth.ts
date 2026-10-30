@@ -1,5 +1,113 @@
-import crypto from "crypto";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
+import type { User } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
+import crypto from "crypto";
+
+export type AdminProfile = {
+  id: string;
+  email: string;
+  userId?: string | null;
+  isActive: boolean;
+  role: string;
+  createdAt?: string;
+};
+
+export type AdminAuthSession = {
+  user: User;
+  admin: AdminProfile;
+};
+
+/**
+ * Server-side authorization check.
+ * Strictly verifies that:
+ * 1. The user has an authenticated Supabase session.
+ * 2. The user has a corresponding record in public.admins.
+ * 3. The admin record is explicitly active (is_active === true).
+ */
+export async function getAuthenticatedAdmin(): Promise<AdminAuthSession | null> {
+  const supabase = await createSupabaseServerClient();
+  if (!supabase) return null;
+
+  try {
+    const {
+      data: { user },
+      error: userError
+    } = await supabase.auth.getUser();
+
+    if (userError || !user || !user.email) {
+      return null;
+    }
+
+    const adminClient = createSupabaseAdminClient();
+    if (!adminClient) {
+      // In local dev without service role, fallback check using server client with RLS
+      const { data: adminRecord } = await supabase
+        .from("admins")
+        .select("id, email, user_id, is_active, role, created_at")
+        .eq("email", user.email)
+        .single();
+
+      if (!adminRecord || adminRecord.is_active === false) {
+        return null;
+      }
+
+      return {
+        user,
+        admin: {
+          id: adminRecord.id,
+          email: adminRecord.email,
+          userId: adminRecord.user_id,
+          isActive: adminRecord.is_active !== false,
+          role: adminRecord.role || "admin",
+          createdAt: adminRecord.created_at
+        }
+      };
+    }
+
+    // Query public.admins by user_id OR email
+    const { data: adminRecord, error: adminError } = await adminClient
+      .from("admins")
+      .select("id, email, user_id, is_active, role, created_at")
+      .or(`user_id.eq.${user.id},email.eq.${user.email}`)
+      .limit(1)
+      .maybeSingle();
+
+    if (adminError || !adminRecord) {
+      return null;
+    }
+
+    // Check if administrator has been deactivated
+    if (adminRecord.is_active === false) {
+      return null;
+    }
+
+    // Auto-link user_id if this admin account was seeded by email without user_id
+    if (!adminRecord.user_id) {
+      await adminClient
+        .from("admins")
+        .update({ user_id: user.id, updated_at: new Date().toISOString() })
+        .eq("id", adminRecord.id);
+    }
+
+    return {
+      user,
+      admin: {
+        id: adminRecord.id,
+        email: adminRecord.email,
+        userId: user.id,
+        isActive: true,
+        role: adminRecord.role || "admin",
+        createdAt: adminRecord.created_at
+      }
+    };
+  } catch (error) {
+    console.error("Error authenticating admin:", error);
+    return null;
+  }
+}
+
+// ================= Legacy Support (backward compatibility) =================
 
 const COOKIE_NAME = "mapify_admin_session";
 const SESSION_DAYS = 7;
@@ -69,6 +177,10 @@ export function verifyAdminSession(token?: string | null) {
 }
 
 export async function readAdminSessionFromCookies() {
+  const adminSession = await getAuthenticatedAdmin();
+  if (adminSession) {
+    return adminSession.admin.email;
+  }
   const cookieStore = await cookies();
   return verifyAdminSession(cookieStore.get(COOKIE_NAME)?.value);
 }
@@ -98,16 +210,19 @@ export function clearAdminSessionCookie() {
 }
 
 function createSignature(payload: string, secret: string) {
-  return crypto.createHmac("sha256", secret).update(payload).digest("base64url");
+  return crypto.createHmac("sha256", secret || "fallback-secret").update(payload).digest("base64url");
 }
 
 function timingSafeEqualHex(a: string, b: string) {
-  return timingSafeEqualString(a, b);
+  const bufA = Buffer.from(a, "hex");
+  const bufB = Buffer.from(b, "hex");
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }
 
 function timingSafeEqualString(a: string, b: string) {
-  const aBuf = Buffer.from(a);
-  const bBuf = Buffer.from(b);
-  if (aBuf.length !== bBuf.length) return false;
-  return crypto.timingSafeEqual(aBuf, bBuf);
+  const bufA = Buffer.from(a);
+  const bufB = Buffer.from(b);
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
 }

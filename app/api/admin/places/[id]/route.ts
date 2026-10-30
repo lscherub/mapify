@@ -1,12 +1,18 @@
 import { NextResponse } from "next/server";
 import { deleteAdminPlace, fetchAdminPlaces, updateAdminPlace } from "@/lib/admin-crud";
 import { adminPlaceSchema } from "@/lib/admin-places";
+import { getAuthenticatedAdmin } from "@/lib/admin-auth";
 
 type Params = {
   params: Promise<{ id: string }>;
 };
 
 export async function PATCH(request: Request, { params }: Params) {
+  const adminSession = await getAuthenticatedAdmin();
+  if (!adminSession) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { id } = await params;
     const body = (await request.json()) as { values?: unknown };
@@ -21,6 +27,11 @@ export async function PATCH(request: Request, { params }: Params) {
 }
 
 export async function DELETE(_request: Request, { params }: Params) {
+  const adminSession = await getAuthenticatedAdmin();
+  if (!adminSession) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const { id } = await params;
     await deleteAdminPlace(id);

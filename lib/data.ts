@@ -4,7 +4,7 @@ import { type Place } from "@/lib/types";
 
 // Public places query: omits wifi passwords to prevent sensitive credentials from leaking in HTML or bundles
 export async function getPlaces(): Promise<Place[]> {
-  const client = createSupabaseServerClient();
+  const client = await createSupabaseServerClient();
 
   if (!client) {
     return sanitizePlaces(demoPlaces);
