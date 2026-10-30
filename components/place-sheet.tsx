@@ -43,15 +43,25 @@ type Props = {
   onLocationUpdate?: (location: UserCoordinates) => void;
 };
 
-const amenityLabels: Array<{ key: keyof Place["amenities"]; label: string }> = [
+const amenityLabels: Array<{ key: string; label: string }> = [
   { key: "powerOutlets", label: "Power outlets" },
-  { key: "laptopFriendly", label: "Laptop friendly" },
+  { key: "laptopFriendly", label: "Laptop-friendly" },
   { key: "quiet", label: "Quiet" },
+  { key: "quietEnvironment", label: "Quiet environment" },
+  { key: "moderateNoise", label: "Moderate noise" },
+  { key: "livelyEnvironment", label: "Lively environment" },
+  { key: "comfortableSeating", label: "Comfortable seating" },
+  { key: "limitedSeating", label: "Limited seating" },
+  { key: "largeTables", label: "Large tables" },
+  { key: "smallTables", label: "Small tables" },
+  { key: "freeWifi", label: "Free Wi-Fi" },
+  { key: "paidWifi", label: "Paid Wi-Fi" },
   { key: "restrooms", label: "Restrooms" },
-  { key: "outdoorSeating", label: "Outdoor seating" },
   { key: "airConditioning", label: "Air conditioning" },
+  { key: "outdoorSeating", label: "Outdoor seating" },
   { key: "wheelchairAccessible", label: "Wheelchair accessible" },
   { key: "foodAvailable", label: "Food available" },
+  { key: "drinksAvailable", label: "Drinks available" },
   { key: "coffeeAvailable", label: "Coffee available" }
 ];
 
@@ -334,6 +344,8 @@ export function PlaceSheet({
                                 : "bg-secondary hover:bg-secondary/80 text-secondary-foreground"
                             )}
                           >
+                            {net.isPrimary ? "★ " : ""}
+                            {net.networkType ? `${net.networkType}: ` : ""}
                             {net.ssid}
                           </button>
                         ))}
@@ -472,24 +484,48 @@ export function PlaceSheet({
               </div>
             )}
 
+            {/* Work Environment Notes if available */}
+            {place.workNotes && (
+              <div className="rounded-2xl border border-border bg-card p-3.5 text-xs">
+                <span className="font-semibold uppercase tracking-wider text-[10px] text-muted-foreground">
+                  Work Environment
+                </span>
+                <p className="mt-1 text-foreground/90 leading-relaxed">{place.workNotes}</p>
+              </div>
+            )}
+
             {/* Amenities Section */}
             <div className="rounded-2xl border border-border bg-card p-3.5">
               <span className="font-semibold uppercase tracking-wider text-[10px] text-muted-foreground">
                 Amenities & Environment
               </span>
               <div className="mt-2.5 flex flex-wrap gap-1.5">
-                {amenityLabels.map((amenity) => {
-                  const active = place.amenities[amenity.key];
-                  return (
+                {place.seatingCapacity && (
+                  <Badge variant="success" className="text-[10px] py-0 px-2 font-medium">
+                    Seats ~{place.seatingCapacity}
+                  </Badge>
+                )}
+                {place.noiseLevel && (
+                  <Badge variant="success" className="text-[10px] py-0 px-2 font-medium capitalize">
+                    {place.noiseLevel} noise
+                  </Badge>
+                )}
+                {amenityLabels
+                  .filter((amenity) => Boolean(place.amenities[amenity.key]))
+                  .map((amenity) => (
                     <Badge
                       key={amenity.key}
-                      variant={active ? "success" : "default"}
+                      variant="success"
                       className="text-[10px] py-0 px-2"
                     >
                       {amenity.label}
                     </Badge>
-                  );
-                })}
+                  ))}
+                {!place.seatingCapacity &&
+                  !place.noiseLevel &&
+                  !amenityLabels.some((a) => Boolean(place.amenities[a.key])) && (
+                    <span className="text-[11px] text-muted-foreground">No specific amenities listed yet.</span>
+                  )}
               </div>
             </div>
 

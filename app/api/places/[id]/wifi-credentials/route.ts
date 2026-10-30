@@ -76,21 +76,24 @@ export async function GET(
   if (client) {
     const { data: place, error: placeError } = await client
       .from("places")
-      .select("id, latitude, longitude")
+      .select("id, latitude, longitude, is_archived")
       .eq("id", id)
       .single();
 
-    if (!placeError && place) {
+    if (!placeError && place && !place.is_archived) {
       placeLat = Number(place.latitude);
       placeLng = Number(place.longitude);
 
       let query = client
         .from("wifi_networks")
-        .select("id, ssid, password, access_type, instructions")
-        .eq("place_id", id);
+        .select("id, ssid, password, access_type, instructions, is_primary, is_active")
+        .eq("place_id", id)
+        .or("is_active.is.null,is_active.eq.true");
 
       if (networkId) {
         query = query.eq("id", networkId);
+      } else {
+        query = query.order("is_primary", { ascending: false });
       }
 
       const { data: networks } = await query;

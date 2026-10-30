@@ -8,20 +8,36 @@ export type AmenityFlags = {
   wheelchairAccessible: boolean;
   foodAvailable: boolean;
   coffeeAvailable: boolean;
-  [key: string]: boolean;
+  comfortableSeating?: boolean;
+  limitedSeating?: boolean;
+  largeTables?: boolean;
+  smallTables?: boolean;
+  drinksAvailable?: boolean;
+  quietEnvironment?: boolean;
+  moderateNoise?: boolean;
+  livelyEnvironment?: boolean;
+  freeWifi?: boolean;
+  paidWifi?: boolean;
+  [key: string]: boolean | undefined;
 };
 
 export type WifiAccessType = "free" | "paid" | "purchase_required" | "customers_only" | "unknown" | "none";
+export type WifiNetworkType = "primary" | "guest" | "staff" | "customer" | "other" | string;
 
 export type WifiNetwork = {
   id: string;
   ssid: string;
   password?: string | null;
+  networkType?: WifiNetworkType;
+  isPrimary?: boolean;
   accessType?: WifiAccessType;
-  instructions?: string;
-  verifiedAt: string;
-  verifiedBy: string;
+  instructions?: string | null;
+  notes?: string | null;
+  verifiedAt?: string;
+  verifiedBy?: string;
   isActive?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type Photo = {
@@ -63,6 +79,10 @@ export type Place = {
   wifiNetworks: WifiNetwork[];
   amenities: AmenityFlags;
   photos: Photo[];
+  isArchived?: boolean;
+  seatingCapacity?: number | null;
+  noiseLevel?: "quiet" | "moderate" | "lively" | null;
+  workNotes?: string | null;
 };
 
 export type PlaceFilters = {
@@ -114,3 +134,83 @@ export type WifiCredentialResult =
       maxDistanceMeters?: number;
       message: string;
     };
+
+export type AdminWifiNetworkInput = {
+  id?: string;
+  ssid: string;
+  password?: string | null;
+  networkType: string;
+  isPrimary: boolean;
+  accessType: WifiAccessType;
+  instructions?: string | null;
+  notes?: string | null;
+  isActive: boolean;
+  verifiedAt?: string | null;
+  verifiedBy?: string | null;
+};
+
+export type AdminPlaceFormValues = {
+  slug: string;
+  name: string;
+  category: string;
+  latitude: number;
+  longitude: number;
+  address: string;
+  city: string;
+  website?: string;
+  phone?: string;
+  hasWifi: boolean;
+  wifiFree: boolean;
+  notes?: string;
+  hours?: string;
+  verifiedAt?: string;
+  verifiedBy?: string;
+  isArchived?: boolean;
+  seatingCapacity?: number | null;
+  noiseLevel?: "quiet" | "moderate" | "lively" | null;
+  workNotes?: string;
+  // Amenities
+  powerOutlets: boolean;
+  laptopFriendly: boolean;
+  quiet: boolean;
+  restrooms: boolean;
+  outdoorSeating: boolean;
+  airConditioning: boolean;
+  wheelchairAccessible: boolean;
+  foodAvailable: boolean;
+  coffeeAvailable: boolean;
+  comfortableSeating: boolean;
+  limitedSeating: boolean;
+  largeTables: boolean;
+  smallTables: boolean;
+  drinksAvailable: boolean;
+  quietEnvironment: boolean;
+  moderateNoise: boolean;
+  livelyEnvironment: boolean;
+  // Networks
+  wifiNetworks: AdminWifiNetworkInput[];
+};
+
+export type DuplicateCheckMatch = {
+  id: string;
+  name: string;
+  address: string;
+  distanceMeters: number;
+  isArchived?: boolean;
+};
+
+export type DiscoveredBusiness = {
+  name: string;
+  category: string;
+  address: string;
+  city: string;
+  latitude: number;
+  longitude: number;
+  distanceMeters?: number;
+  phone?: string;
+  website?: string;
+  hours?: string;
+  source: "overpass" | "nominatim";
+  isAlreadyInMapify: boolean;
+  existingPlaceId?: string;
+};

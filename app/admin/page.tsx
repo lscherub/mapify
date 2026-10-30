@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { AdminPanel } from "@/components/admin/admin-panel";
-import { getPlaces } from "@/lib/data";
+import { fetchAdminPlaces } from "@/lib/admin-crud";
 import { getAuthenticatedAdmin } from "@/lib/admin-auth";
 
 export const metadata = {
@@ -18,7 +18,7 @@ export default async function AdminPage() {
     redirect("/admin/login");
   }
 
-  const places = await getPlaces();
+  const places = await fetchAdminPlaces();
 
   return <AdminPanel places={places} admin={session.admin} />;
 }
