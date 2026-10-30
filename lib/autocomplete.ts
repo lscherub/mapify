@@ -1,4 +1,4 @@
-import { VANCOUVER_CENTER } from "@/lib/constants";
+import { DEFAULT_FALLBACK_CENTER } from "@/lib/constants";
 import { buildSuggestions, haversineKm } from "@/lib/place-utils";
 import { searchOsmSuggestions } from "@/lib/osm";
 import { type Place, type Suggestion } from "@/lib/types";
@@ -9,7 +9,7 @@ export async function getAutocompleteSuggestions(
   bias?: { latitude: number; longitude: number } | null
 ) {
   const trimmed = query.trim();
-  const focus = bias ?? VANCOUVER_CENTER;
+  const focus = bias ?? (places[0] ? { latitude: places[0].latitude, longitude: places[0].longitude } : DEFAULT_FALLBACK_CENTER);
 
   const localSuggestions = buildSuggestions(places, trimmed).map((suggestion) => ({
     ...suggestion,

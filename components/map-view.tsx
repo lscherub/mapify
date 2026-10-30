@@ -1,6 +1,10 @@
 "use client";
 
-import maplibregl, { type Map as MapLibreMap, type MapGeoJSONFeature, type StyleSpecification } from "maplibre-gl";
+import maplibregl, {
+  type Map as MapLibreMap,
+  type MapGeoJSONFeature,
+  type StyleSpecification
+} from "maplibre-gl";
 import { useEffect, useMemo, useRef } from "react";
 import { DEFAULT_ZOOM } from "@/lib/constants";
 import { type Place } from "@/lib/types";
@@ -9,8 +13,10 @@ type Props = {
   places: Place[];
   initialCenter: { latitude: number; longitude: number };
   selectedPlaceId?: string;
-  userLocation?: { latitude: number; longitude: number } | null;
+  userLocation?: { latitude: number; longitude: number; accuracy?: number } | null;
   recenterSignal: number;
+  panTarget?: { center: { latitude: number; longitude: number }; zoom?: number } | null;
+  onPanTargetHandled?: () => void;
   onSelectPlace: (placeId: string) => void;
   onViewportChange?: (viewport: {
     center: { latitude: number; longitude: number };
@@ -31,7 +37,10 @@ type GeoJsonFeatureCollection = {
       placeId: string;
       name: string;
       category: string;
+      hasWifi: string;
       wifiFree: string;
+      isVerified: string;
+      isSelected: string;
       source: string;
     };
   }>;
@@ -39,6 +48,7 @@ type GeoJsonFeatureCollection = {
 
 const OSM_STYLE: StyleSpecification = {
   version: 8,
+  glyphs: "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
   sources: {
     osm: {
       type: "raster",
@@ -63,18 +73,20 @@ export function MapView({
   selectedPlaceId,
   userLocation,
   recenterSignal,
+  panTarget,
+  onPanTargetHandled,
   onSelectPlace,
   onViewportChange,
   onMapReady
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const geojsonRef = useRef<GeoJsonFeatureCollection>(buildGeoJson(places));
-  const userLocationRef = useRef<{ latitude: number; longitude: number } | null>(null);
-  const userMarkerRef = useRef<maplibregl.Marker | null>(null);
+  const geojsonRef = useRef<GeoJsonFeatureCollection>(buildGeoJson(places, selectedPlaceId));
+  const userLocationRef = useRef<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
   const moveEndTimeoutRef = useRef<number | null>(null);
+  const hasInitialCenteredUser = useRef<boolean>(false);
 
-  const geojson = useMemo(() => buildGeoJson(places), [places]);
+  const geojson = useMemo(() => buildGeoJson(places, selectedPlaceId), [places, selectedPlaceId]);
 
   useEffect(() => {
     geojsonRef.current = geojson;
@@ -97,52 +109,35 @@ export function MapView({
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "bottom-right");
 
-      map.on("load", () => {
-      map.addSource("places", {
+    map.on("load", () => {
+      // 1. Accuracy circle for user GPS
+      map.addSource("user-accuracy", {
         type: "geojson",
-        data: geojsonRef.current,
-        cluster: true,
-        clusterMaxZoom: 13,
-        clusterRadius: 44
+        data: buildUserAccuracyGeoJson(userLocationRef.current)
       });
 
       map.addLayer({
-        id: "clusters",
-        type: "circle",
-        source: "places",
-        filter: ["has", "point_count"],
+        id: "user-accuracy-fill",
+        type: "fill",
+        source: "user-accuracy",
         paint: {
-          "circle-color": "#111827",
-          "circle-opacity": 0.82,
-          "circle-radius": ["step", ["get", "point_count"], 18, 10, 24, 30, 32]
+          "fill-color": "#3B82F6",
+          "fill-opacity": 0.14
         }
       });
 
       map.addLayer({
-        id: "cluster-outline",
-        type: "circle",
-        source: "places",
-        filter: ["has", "point_count"],
+        id: "user-accuracy-stroke",
+        type: "line",
+        source: "user-accuracy",
         paint: {
-          "circle-color": "#ffffff",
-          "circle-opacity": 0.14,
-          "circle-radius": ["step", ["get", "point_count"], 24, 10, 30, 30, 38]
+          "line-color": "#2563EB",
+          "line-opacity": 0.35,
+          "line-width": 1.5
         }
       });
 
-      map.addLayer({
-        id: "unclustered-point",
-        type: "circle",
-        source: "places",
-        filter: ["!", ["has", "point_count"]],
-        paint: {
-          "circle-color": ["case", ["==", ["get", "source"], "osm"], "#0F766E", "#2563EB"],
-          "circle-radius": 10,
-          "circle-stroke-width": 3,
-          "circle-stroke-color": "#ffffff"
-        }
-      });
-
+      // 2. User location point indicator
       map.addSource("user-location", {
         type: "geojson",
         data: buildUserLocationGeoJson(userLocationRef.current)
@@ -154,8 +149,8 @@ export function MapView({
         source: "user-location",
         paint: {
           "circle-color": "#2563EB",
-          "circle-opacity": 0.18,
-          "circle-radius": 18
+          "circle-opacity": 0.22,
+          "circle-radius": 16
         }
       });
 
@@ -166,11 +161,108 @@ export function MapView({
         paint: {
           "circle-color": "#2563EB",
           "circle-radius": 7,
-          "circle-stroke-width": 2,
+          "circle-stroke-width": 2.5,
           "circle-stroke-color": "#ffffff"
         }
       });
 
+      // 3. Places data source
+      map.addSource("places", {
+        type: "geojson",
+        data: geojsonRef.current,
+        cluster: true,
+        clusterMaxZoom: 13,
+        clusterRadius: 44
+      });
+
+      // Clusters
+      map.addLayer({
+        id: "clusters",
+        type: "circle",
+        source: "places",
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": "#1E293B",
+          "circle-opacity": 0.9,
+          "circle-radius": ["step", ["get", "point_count"], 18, 10, 24, 30, 32]
+        }
+      });
+
+      map.addLayer({
+        id: "cluster-outline",
+        type: "circle",
+        source: "places",
+        filter: ["has", "point_count"],
+        paint: {
+          "circle-color": "#ffffff",
+          "circle-opacity": 0.18,
+          "circle-radius": ["step", ["get", "point_count"], 24, 10, 30, 30, 38]
+        }
+      });
+
+      map.addLayer({
+        id: "cluster-count",
+        type: "symbol",
+        source: "places",
+        filter: ["has", "point_count"],
+        layout: {
+          "text-field": "{point_count_abbreviated}",
+          "text-font": ["Open Sans Semibold", "Arial Unicode MS Bold"],
+          "text-size": 12
+        },
+        paint: {
+          "text-color": "#ffffff"
+        }
+      });
+
+      // Selected ring indicator
+      map.addLayer({
+        id: "unclustered-selected-ring",
+        type: "circle",
+        source: "places",
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "isSelected"], "true"]],
+        paint: {
+          "circle-color": "transparent",
+          "circle-radius": 16,
+          "circle-stroke-width": 3.5,
+          "circle-stroke-color": "#2563EB"
+        }
+      });
+
+      // Verified Wi-Fi ambient glow
+      map.addLayer({
+        id: "unclustered-verified-glow",
+        type: "circle",
+        source: "places",
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "isVerified"], "true"]],
+        paint: {
+          "circle-color": "#10B981",
+          "circle-opacity": 0.28,
+          "circle-radius": 15
+        }
+      });
+
+      // Unclustered place markers:
+      // Emerald (#059669) for verified Wi-Fi, Slate (#64748B) for unverified
+      map.addLayer({
+        id: "unclustered-point",
+        type: "circle",
+        source: "places",
+        filter: ["!", ["has", "point_count"]],
+        paint: {
+          "circle-color": [
+            "case",
+            ["==", ["get", "isVerified"], "true"],
+            "#059669",
+            "#64748B"
+          ],
+          "circle-radius": 9,
+          "circle-stroke-width": 2.5,
+          "circle-stroke-color": "#ffffff"
+        }
+      });
+
+      // Cluster clicks
       map.on("click", "clusters", (event) => {
         const feature = event.features?.[0];
         const clusterId = feature?.properties?.cluster_id;
@@ -194,10 +286,13 @@ export function MapView({
         });
       });
 
+      // Marker click: opens information card without forced flyTo
       map.on("click", "unclustered-point", (event) => {
         const feature = event.features?.[0] as MapGeoJSONFeature | undefined;
         const placeId = feature?.properties?.placeId as string | undefined;
-        if (placeId) onSelectPlace(placeId);
+        if (placeId) {
+          onSelectPlace(placeId);
+        }
       });
 
       map.on("mouseenter", "clusters", () => {
@@ -213,6 +308,7 @@ export function MapView({
         map.getCanvas().style.cursor = "";
       });
 
+      // Viewport change emitter (debounced on moveend)
       map.on("moveend", () => {
         if (moveEndTimeoutRef.current) {
           window.clearTimeout(moveEndTimeoutRef.current);
@@ -230,11 +326,20 @@ export function MapView({
               north: bounds.getNorth()
             }
           });
-        }, 100);
+        }, 180);
       });
 
       onMapReady?.(map);
       onViewportChange?.(emitViewport(map));
+
+      // If userLocation was already resolved before map loaded, center once
+      if (userLocationRef.current && !hasInitialCenteredUser.current) {
+        hasInitialCenteredUser.current = true;
+        map.jumpTo({
+          center: [userLocationRef.current.longitude, userLocationRef.current.latitude],
+          zoom: DEFAULT_ZOOM
+        });
+      }
     });
 
     mapRef.current = map;
@@ -248,6 +353,7 @@ export function MapView({
     };
   }, []);
 
+  // Update places GeoJSON without affecting map camera
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -258,66 +364,98 @@ export function MapView({
     }
   }, [geojson]);
 
+  // Update user GPS location indicator without moving camera
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !userLocation) return;
+    if (!map) return;
 
-    const source = map.getSource("user-location") as maplibregl.GeoJSONSource | undefined;
-    if (source) {
-      source.setData(buildUserLocationGeoJson(userLocation));
+    const location = userLocation ?? null;
+
+    const pointSource = map.getSource("user-location") as maplibregl.GeoJSONSource | undefined;
+    if (pointSource) {
+      pointSource.setData(buildUserLocationGeoJson(location));
+    }
+
+    const accuracySource = map.getSource("user-accuracy") as maplibregl.GeoJSONSource | undefined;
+    if (accuracySource) {
+      accuracySource.setData(buildUserAccuracyGeoJson(location));
+    }
+
+    // Auto-center on user GPS strictly ONCE during initial startup
+    if (location && !hasInitialCenteredUser.current) {
+      hasInitialCenteredUser.current = true;
+      map.flyTo({
+        center: [location.longitude, location.latitude],
+        zoom: DEFAULT_ZOOM,
+        speed: 1.2
+      });
     }
   }, [userLocation]);
 
+  // Explicit panTarget (e.g. from search selection or place list click)
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !selectedPlaceId) return;
-
-    const place = places.find((entry) => entry.id === selectedPlaceId);
-    if (!place) return;
+    if (!map || !panTarget) return;
 
     map.flyTo({
-      center: [place.longitude, place.latitude],
-      zoom: Math.max(map.getZoom(), 14),
-      speed: 1.2
+      center: [panTarget.center.longitude, panTarget.center.latitude],
+      zoom: panTarget.zoom ?? Math.max(map.getZoom(), 15),
+      speed: 1.3
     });
-  }, [places, selectedPlaceId]);
 
+    onPanTargetHandled?.();
+  }, [panTarget, onPanTargetHandled]);
+
+  // Explicit My Location recenter button
   useEffect(() => {
     const map = mapRef.current;
     const location = userLocationRef.current;
-    if (!map || !location) return;
+    if (!map || !location || recenterSignal === 0) return;
 
     map.flyTo({
       center: [location.longitude, location.latitude],
-      zoom: Math.max(map.getZoom(), DEFAULT_ZOOM),
-      speed: 1.2
+      zoom: Math.max(map.getZoom(), 15),
+      speed: 1.3
     });
   }, [recenterSignal]);
 
   return <div ref={containerRef} className="absolute inset-0" />;
 }
 
-function buildGeoJson(places: Place[]): GeoJsonFeatureCollection {
+function buildGeoJson(places: Place[], selectedPlaceId?: string): GeoJsonFeatureCollection {
   return {
     type: "FeatureCollection",
-    features: places.map((place) => ({
-      type: "Feature",
-      geometry: {
-        type: "Point",
-        coordinates: [place.longitude, place.latitude]
-      },
-      properties: {
-        placeId: place.id,
-        name: place.name,
-        category: place.category,
-        wifiFree: place.wifiFree ? "true" : "false",
-        source: place.source
-      }
-    }))
+    features: places.map((place) => {
+      const isVerified =
+        place.hasWifi &&
+        Array.isArray(place.wifiNetworks) &&
+        place.wifiNetworks.length > 0 &&
+        Boolean(place.verifiedAt);
+
+      return {
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: [place.longitude, place.latitude]
+        },
+        properties: {
+          placeId: place.id,
+          name: place.name,
+          category: place.category,
+          hasWifi: place.hasWifi ? "true" : "false",
+          wifiFree: place.wifiFree ? "true" : "false",
+          isVerified: isVerified ? "true" : "false",
+          isSelected: place.id === selectedPlaceId ? "true" : "false",
+          source: place.source
+        }
+      };
+    })
   };
 }
 
-function buildUserLocationGeoJson(location: { latitude: number; longitude: number } | null) {
+function buildUserLocationGeoJson(
+  location: { latitude: number; longitude: number; accuracy?: number } | null
+) {
   return {
     type: "FeatureCollection" as const,
     features: location
@@ -332,6 +470,46 @@ function buildUserLocationGeoJson(location: { latitude: number; longitude: numbe
           }
         ]
       : []
+  };
+}
+
+function buildUserAccuracyGeoJson(
+  location: { latitude: number; longitude: number; accuracy?: number } | null
+) {
+  if (!location || !location.accuracy || location.accuracy <= 0) {
+    return {
+      type: "FeatureCollection" as const,
+      features: []
+    };
+  }
+
+  // Generate 36-point polygon for the accuracy circle in meters
+  const points = 36;
+  const km = location.accuracy / 1000;
+  const distanceX = km / (111.32 * Math.cos((location.latitude * Math.PI) / 180));
+  const distanceY = km / 110.574;
+  const coordinates: [number, number][] = [];
+
+  for (let i = 0; i < points; i++) {
+    const theta = (i / points) * (2 * Math.PI);
+    const x = distanceX * Math.cos(theta);
+    const y = distanceY * Math.sin(theta);
+    coordinates.push([location.longitude + x, location.latitude + y]);
+  }
+  coordinates.push(coordinates[0]);
+
+  return {
+    type: "FeatureCollection" as const,
+    features: [
+      {
+        type: "Feature" as const,
+        geometry: {
+          type: "Polygon" as const,
+          coordinates: [coordinates]
+        },
+        properties: {}
+      }
+    ]
   };
 }
 

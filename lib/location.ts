@@ -1,8 +1,12 @@
-import { VANCOUVER_CENTER } from "@/lib/constants";
+export type UserCoordinates = {
+  latitude: number;
+  longitude: number;
+  accuracy?: number;
+};
 
-export async function getBrowserLocation(): Promise<{ latitude: number; longitude: number }> {
+export async function getBrowserLocation(): Promise<UserCoordinates | null> {
   if (typeof window === "undefined" || !("geolocation" in navigator)) {
-    return VANCOUVER_CENTER;
+    return null;
   }
 
   return new Promise((resolve) => {
@@ -10,9 +14,10 @@ export async function getBrowserLocation(): Promise<{ latitude: number; longitud
       (position) =>
         resolve({
           latitude: position.coords.latitude,
-          longitude: position.coords.longitude
+          longitude: position.coords.longitude,
+          accuracy: position.coords.accuracy
         }),
-      () => resolve(VANCOUVER_CENTER),
+      () => resolve(null),
       {
         enableHighAccuracy: true,
         timeout: 8000,
@@ -23,11 +28,10 @@ export async function getBrowserLocation(): Promise<{ latitude: number; longitud
 }
 
 export function watchBrowserLocation(
-  onUpdate: (location: { latitude: number; longitude: number }) => void,
-  onFallback?: (location: { latitude: number; longitude: number }) => void
+  onUpdate: (location: UserCoordinates) => void,
+  onError?: (error: GeolocationPositionError) => void
 ) {
   if (typeof window === "undefined" || !("geolocation" in navigator)) {
-    onFallback?.(VANCOUVER_CENTER);
     return () => undefined;
   }
 
@@ -35,15 +39,17 @@ export function watchBrowserLocation(
     (position) =>
       onUpdate({
         latitude: position.coords.latitude,
-        longitude: position.coords.longitude
+        longitude: position.coords.longitude,
+        accuracy: position.coords.accuracy
       }),
-    () => {
-      onFallback?.(VANCOUVER_CENTER);
+    (error) => {
+      onError?.(error);
+      // Notice: Do NOT overwrite the user's location with a fallback on error!
     },
     {
       enableHighAccuracy: true,
-      maximumAge: 10000,
-      timeout: 12000
+      maximumAge: 15000,
+      timeout: 15000
     }
   );
 
