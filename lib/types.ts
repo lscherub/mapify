@@ -8,14 +8,20 @@ export type AmenityFlags = {
   wheelchairAccessible: boolean;
   foodAvailable: boolean;
   coffeeAvailable: boolean;
+  [key: string]: boolean;
 };
+
+export type WifiAccessType = "free" | "paid" | "purchase_required" | "customers_only" | "unknown" | "none";
 
 export type WifiNetwork = {
   id: string;
   ssid: string;
-  password: string | null;
+  password?: string | null;
+  accessType?: WifiAccessType;
+  instructions?: string;
   verifiedAt: string;
   verifiedBy: string;
+  isActive?: boolean;
 };
 
 export type Photo = {
@@ -76,3 +82,35 @@ export type Suggestion = {
   source?: LocationSource;
   place?: Place;
 };
+
+export type WifiSubmission = {
+  id?: string;
+  placeId?: string;
+  placeName: string;
+  placeAddress?: string;
+  latitude?: number;
+  longitude?: number;
+  ssid: string;
+  password?: string;
+  accessType: WifiAccessType;
+  instructions?: string;
+  notes?: string;
+  status?: "pending" | "in_review" | "approved" | "rejected";
+  createdAt?: string;
+};
+
+export type WifiCredentialResult =
+  | {
+      authorized: true;
+      ssid: string;
+      password: string | null;
+      instructions?: string | null;
+      accessType?: string;
+    }
+  | {
+      authorized: false;
+      reason: "missing_location" | "outside_proximity" | "not_found" | "no_password" | "rate_limited";
+      distanceMeters?: number;
+      maxDistanceMeters?: number;
+      message: string;
+    };

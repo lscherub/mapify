@@ -2,10 +2,13 @@ import { demoPlaces } from "@/lib/mock-data";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { type Place } from "@/lib/types";
 
+// Public places query: omits wifi passwords to prevent sensitive credentials from leaking in HTML or bundles
 export async function getPlaces(): Promise<Place[]> {
   const client = createSupabaseServerClient();
 
-  if (!client) return demoPlaces;
+  if (!client) {
+    return sanitizePlaces(demoPlaces);
+  }
 
   try {
     const { data, error } = await client.from("places").select(`
@@ -37,7 +40,6 @@ export async function getPlaces(): Promise<Place[]> {
       wifi_networks (
         id,
         ssid,
-        password,
         verified_at,
         verified_by
       ),
@@ -48,7 +50,9 @@ export async function getPlaces(): Promise<Place[]> {
       )
     `);
 
-    if (error || !data?.length) return demoPlaces;
+    if (error || !data?.length) {
+      return sanitizePlaces(demoPlaces);
+    }
 
     return data.map((place) => ({
       id: place.id,
@@ -84,7 +88,7 @@ export async function getPlaces(): Promise<Place[]> {
         ? place.wifi_networks.map((network) => ({
             id: network.id,
             ssid: network.ssid,
-            password: network.password ?? null,
+            password: null, // Keep password null on initial public load
             verifiedAt: network.verified_at,
             verifiedBy: network.verified_by
           }))
@@ -98,6 +102,16 @@ export async function getPlaces(): Promise<Place[]> {
         : []
     }));
   } catch {
-    return demoPlaces;
+    return sanitizePlaces(demoPlaces);
   }
+}
+
+function sanitizePlaces(places: Place[]): Place[] {
+  return places.map((place) => ({
+    ...place,
+    wifiNetworks: place.wifiNetworks.map((net) => ({
+      ...net,
+      password: null // Clean initial state
+    }))
+  }));
 }

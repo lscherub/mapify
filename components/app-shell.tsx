@@ -428,11 +428,16 @@ export function AppShell({ initialPlaces }: Props) {
         <PlaceSheet
           place={selectedPlace}
           open={Boolean(selectedPlace && selectedPlaceId)}
+          userLocation={userLocation}
           onClose={() => setSelectedPlaceId(undefined)}
           onToggleFavorite={() => {
             if (selectedPlace) toggleFavorite(selectedPlace.id);
           }}
           isFavorite={selectedPlace ? isFavorite(selectedPlace.id) : false}
+          onLocationUpdate={(loc) => {
+            setUserLocation(loc);
+            setLocationStatus("granted");
+          }}
         />
       </section>
     </main>
