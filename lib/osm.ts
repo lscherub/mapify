@@ -38,16 +38,30 @@ type OverpassElement = {
   tags?: Record<string, string>;
 };
 
+// In-memory cache for search queries (5-minute TTL)
+const searchCache = new Map<string, { timestamp: number; data: Suggestion[] }>();
+const CACHE_TTL_MS = 5 * 60 * 1000;
+
 export async function searchOsmSuggestions(query: string, bias?: GeoPoint | null): Promise<Suggestion[]> {
   const trimmed = query.trim();
   if (!trimmed) return [];
+
+  const cacheKey = `${trimmed.toLowerCase()}::${
+    bias ? `${bias.latitude.toFixed(2)},${bias.longitude.toFixed(2)}` : "global"
+  }`;
+  const cached = searchCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
 
   const [nominatim, opencage] = await Promise.allSettled([
     fetchNominatimSuggestions(trimmed, bias),
     fetchOpenCageSuggestions(trimmed, bias)
   ]);
 
-  return [...unwrapResults(nominatim), ...unwrapResults(opencage)];
+  const results = [...unwrapResults(nominatim), ...unwrapResults(opencage)];
+  searchCache.set(cacheKey, { timestamp: Date.now(), data: results });
+  return results;
 }
 
 export async function fetchNearbyOsmPlaces(bounds: {
@@ -72,104 +86,125 @@ export async function fetchNearbyOsmPlaces(bounds: {
 }
 
 async function fetchNominatimSuggestions(query: string, bias?: GeoPoint | null): Promise<Suggestion[]> {
-  const url = new URL("https://nominatim.openstreetmap.org/search");
-  url.searchParams.set("format", "jsonv2");
-  url.searchParams.set("q", query);
-  url.searchParams.set("limit", "10");
-  url.searchParams.set("addressdetails", "1");
-  url.searchParams.set("extratags", "1");
+  const baseHeaders = {
+    "Accept-Language": "en",
+    "User-Agent": "Mapify-Discovery-App/1.0 (https://mapify-blush.vercel.app)"
+  };
 
-  // If query is short (<= 3 chars) and bias is present, soft-bias to current view
-  if (bias && query.length <= 4) {
-    const delta = 0.5;
-    url.searchParams.set(
-      "viewbox",
-      `${bias.longitude - delta},${bias.latitude - delta},${bias.longitude + delta},${bias.latitude + delta}`
-    );
-    url.searchParams.set("bounded", "0");
+  // Helper to query Nominatim
+  const queryNominatim = async (withViewbox: boolean): Promise<NominatimV2Result[]> => {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set("q", query);
+    url.searchParams.set("limit", "15");
+    url.searchParams.set("addressdetails", "1");
+    url.searchParams.set("extratags", "1");
+
+    if (withViewbox && bias) {
+      const delta = 0.75; // ~75km radius covering city & metro region
+      url.searchParams.set(
+        "viewbox",
+        `${bias.longitude - delta},${bias.latitude - delta},${bias.longitude + delta},${bias.latitude + delta}`
+      );
+      url.searchParams.set("bounded", "0"); // Soft bias: prioritize local matches without excluding global
+    }
+
+    try {
+      const response = await fetch(url.toString(), {
+        headers: baseHeaders,
+        next: { revalidate: 300 }
+      });
+      if (!response.ok) return [];
+      const json = await response.json();
+      return Array.isArray(json) ? (json as NominatimV2Result[]) : [];
+    } catch {
+      return [];
+    }
+  };
+
+  // Two-stage search strategy:
+  // Stage 1: Location-biased search around active geographic reference
+  let rawResults = await queryNominatim(Boolean(bias));
+
+  // Stage 2: If Stage 1 produced fewer than 3 results and query has 3+ chars,
+  // query broader/global results and combine without duplicates
+  if (bias && rawResults.length < 3 && query.length >= 3) {
+    const globalResults = await queryNominatim(false);
+    const seenOsmIds = new Set(rawResults.map((r) => `${r.osm_type}:${r.osm_id}`));
+    for (const item of globalResults) {
+      const key = `${item.osm_type}:${item.osm_id}`;
+      if (!seenOsmIds.has(key)) {
+        seenOsmIds.add(key);
+        rawResults.push(item);
+      }
+    }
   }
 
-  try {
-    const response = await fetch(url.toString(), {
-      headers: {
-        "Accept-Language": "en",
-        "User-Agent": "Mapify-Discovery-App/1.0 (https://mapify-blush.vercel.app)"
-      },
-      next: { revalidate: 300 }
-    });
+  // Convert Nominatim raw results to Suggestion format
+  return rawResults
+    .map((item, index) => {
+      const latitude = parseFloat(item.lat);
+      const longitude = parseFloat(item.lon);
+      if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
 
-    if (!response.ok) return [];
+      const name =
+        item.name ||
+        item.address?.amenity ||
+        item.address?.shop ||
+        item.address?.tourism ||
+        item.display_name.split(",")[0] ||
+        "Place";
 
-    const data = (await response.json()) as NominatimV2Result[];
-    if (!Array.isArray(data)) return [];
+      const city =
+        item.address?.city ??
+        item.address?.town ??
+        item.address?.village ??
+        item.address?.suburb ??
+        item.address?.state ??
+        item.address?.country ??
+        "";
 
-    return data
-      .map((item, index) => {
-        const latitude = parseFloat(item.lat);
-        const longitude = parseFloat(item.lon);
-        if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return null;
+      const category = normalizeCategory(item.type || item.category || "Business");
 
-        const name =
-          item.name ||
-          item.address?.amenity ||
-          item.address?.shop ||
-          item.address?.tourism ||
-          item.display_name.split(",")[0] ||
-          "Place";
+      const place: Place = {
+        id: `osm-${item.osm_type || "node"}-${item.osm_id || index}-${Math.round(latitude * 10000)}`,
+        slug: `osm-${item.osm_id || index}-${Math.round(latitude * 10000)}`,
+        name,
+        category,
+        latitude,
+        longitude,
+        address: item.display_name,
+        city,
+        source: "osm",
+        hasWifi: false,
+        wifiFree: false,
+        wifiMessage: "Wi-Fi information has not yet been added to Mapify.",
+        notes: `Discovered from OpenStreetMap (${category.toLowerCase()}).`,
+        verifiedBy: "OpenStreetMap",
+        wifiNetworks: [],
+        amenities: emptyAmenities(),
+        photos: [],
+        osm: {
+          osmId: item.osm_id || index,
+          osmType: item.osm_type || "node",
+          provider: "nominatim"
+        }
+      };
 
-        const city =
-          item.address?.city ??
-          item.address?.town ??
-          item.address?.village ??
-          item.address?.suburb ??
-          item.address?.state ??
-          item.address?.country ??
-          "";
+      const suggestion: Suggestion = {
+        id: place.id,
+        title: place.name,
+        subtitle: place.address,
+        latitude: place.latitude,
+        longitude: place.longitude,
+        type: item.category === "place" ? "city" : "place",
+        source: "osm",
+        place
+      };
 
-        const category = normalizeCategory(item.type || item.category || "Business");
-
-        const place: Place = {
-          id: `osm-${item.osm_type || "node"}-${item.osm_id || index}-${Math.round(latitude * 10000)}`,
-          slug: `osm-${item.osm_id || index}-${Math.round(latitude * 10000)}`,
-          name,
-          category,
-          latitude,
-          longitude,
-          address: item.display_name,
-          city,
-          source: "osm",
-          hasWifi: false,
-          wifiFree: false,
-          wifiMessage: "Wi-Fi information has not yet been added to Mapify.",
-          notes: `Discovered from OpenStreetMap (${category.toLowerCase()}).`,
-          verifiedBy: "OpenStreetMap",
-          wifiNetworks: [],
-          amenities: emptyAmenities(),
-          photos: [],
-          osm: {
-            osmId: item.osm_id || index,
-            osmType: item.osm_type || "node",
-            provider: "nominatim"
-          }
-        };
-
-        const suggestion: Suggestion = {
-          id: place.id,
-          title: place.name,
-          subtitle: place.address,
-          latitude: place.latitude,
-          longitude: place.longitude,
-          type: item.category === "place" ? "city" : "place",
-          source: "osm",
-          place
-        };
-
-        return suggestion;
-      })
-      .filter(Boolean) as Suggestion[];
-  } catch {
-    return [];
-  }
+      return suggestion;
+    })
+    .filter(Boolean) as Suggestion[];
 }
 
 async function fetchOpenCageSuggestions(query: string, bias?: GeoPoint | null): Promise<Suggestion[]> {
@@ -276,8 +311,8 @@ async function fetchOverpassPlaces(bounds: { west: number; south: number; east: 
   node["amenity"~"cafe|restaurant|fast_food|pub|bar|library|coworking_space|internet_cafe|community_centre|college|university"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
   way["amenity"~"cafe|restaurant|fast_food|pub|bar|library|coworking_space|internet_cafe|community_centre|college|university"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
   relation["amenity"~"cafe|restaurant|fast_food|pub|bar|library|coworking_space|internet_cafe|community_centre|college|university"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
-  node["shop"~"coffee|bakery|convenience"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
-  way["shop"~"coffee|bakery|convenience"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
+  node["shop"~"coffee|bakery|convenience|supermarket"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
+  way["shop"~"coffee|bakery|convenience|supermarket"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
   node["tourism"~"hotel|hostel|guest_house"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
 );
 out center tags;
@@ -374,6 +409,7 @@ function buildAddress(tags: Record<string, string>) {
 function normalizeCategory(raw?: string) {
   const value = (raw ?? "").toLowerCase();
   if (value.includes("cafe") || value.includes("coffee")) return "Cafe";
+  if (value.includes("supermarket") || value.includes("grocery")) return "Supermarket";
   if (value.includes("restaurant") || value.includes("fast_food")) return "Restaurant";
   if (value.includes("library")) return "Library";
   if (value.includes("cowork") || value.includes("office")) return "Coworking";

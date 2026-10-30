@@ -12,7 +12,7 @@ import { PlaceSheet } from "@/components/place-sheet";
 import { MapView } from "@/components/map-view";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { useFavorites } from "@/lib/favorites";
-import { attachDistances, filterPlaces } from "@/lib/place-utils";
+import { filterPlaces, rankPlaces } from "@/lib/place-utils";
 import { getBrowserLocation, watchBrowserLocation, type UserCoordinates } from "@/lib/location";
 import { DEFAULT_FALLBACK_CENTER } from "@/lib/constants";
 import { type Place, type PlaceFilters, type Suggestion } from "@/lib/types";
@@ -45,6 +45,9 @@ export function AppShell({ initialPlaces }: Props) {
     }
     return DEFAULT_FALLBACK_CENTER;
   }, [initialPlaces]);
+
+  // Active geographic reference for search ranking (prioritizes GPS initially, then map center when user pans)
+  const [geoReference, setGeoReference] = useState<{ latitude: number; longitude: number }>(fallbackCenter);
 
   const [viewport, setViewport] = useState<Viewport>({
     center: fallbackCenter,
@@ -79,6 +82,7 @@ export function AppShell({ initialPlaces }: Props) {
 
         if (location) {
           setUserLocation(location);
+          setGeoReference({ latitude: location.latitude, longitude: location.longitude });
           setLocationStatus("granted");
         } else {
           setLocationStatus("denied");
@@ -150,23 +154,17 @@ export function AppShell({ initialPlaces }: Props) {
   // Combine database places and discovered OSM places
   const allPlaces = useMemo(() => dedupePlaces([...initialPlaces, ...osmPlaces]), [initialPlaces, osmPlaces]);
 
-  // Search and distance calculation bias: user location if available, otherwise map center
-  const searchBias = useMemo(() => {
-    return userLocation
-      ? { latitude: userLocation.latitude, longitude: userLocation.longitude }
-      : viewport.center;
-  }, [userLocation, viewport.center]);
-
+  // Location-aware, nearest-first ranking for place results using active geographic reference
   const filteredPlaces = useMemo(() => {
     const data = filterPlaces(allPlaces, query, filters);
-    const withDistances = attachDistances(data, searchBias);
+    const ranked = rankPlaces(data, query, geoReference);
 
     if (filters.favoritesOnly) {
-      return withDistances.filter((place) => favorites.includes(place.id));
+      return ranked.filter((place) => favorites.includes(place.id));
     }
 
-    return withDistances;
-  }, [allPlaces, favorites, filters, query, searchBias]);
+    return ranked;
+  }, [allPlaces, favorites, filters, query, geoReference]);
 
   const selectedPlace = useMemo(() => {
     if (!selectedPlaceId) return null;
@@ -180,6 +178,10 @@ export function AppShell({ initialPlaces }: Props) {
     if (suggestion.place) {
       upsertPlace(setOsmPlaces, suggestion.place);
       setSelectedPlaceId(suggestion.place.id);
+      setGeoReference({
+        latitude: suggestion.place.latitude,
+        longitude: suggestion.place.longitude
+      });
       setPanTarget({
         center: {
           latitude: suggestion.place.latitude,
@@ -191,6 +193,10 @@ export function AppShell({ initialPlaces }: Props) {
     }
 
     if (typeof suggestion.latitude === "number" && typeof suggestion.longitude === "number") {
+      setGeoReference({
+        latitude: suggestion.latitude,
+        longitude: suggestion.longitude
+      });
       setPanTarget({
         center: { latitude: suggestion.latitude, longitude: suggestion.longitude },
         zoom: 15
@@ -202,6 +208,10 @@ export function AppShell({ initialPlaces }: Props) {
   // Handle selecting a place from list
   const handleSelectFromList = (place: Place) => {
     setSelectedPlaceId(place.id);
+    setGeoReference({
+      latitude: place.latitude,
+      longitude: place.longitude
+    });
     setPanTarget({
       center: { latitude: place.latitude, longitude: place.longitude },
       zoom: 15
@@ -217,6 +227,7 @@ export function AppShell({ initialPlaces }: Props) {
       const location = userLocation ?? (await getBrowserLocation());
       if (location) {
         setUserLocation(location);
+        setGeoReference({ latitude: location.latitude, longitude: location.longitude });
         setLocationStatus("granted");
         setPanTarget({
           center: { latitude: location.latitude, longitude: location.longitude },
@@ -241,7 +252,11 @@ export function AppShell({ initialPlaces }: Props) {
           panTarget={panTarget}
           onPanTargetHandled={() => setPanTarget(null)}
           onSelectPlace={(id) => setSelectedPlaceId(id)}
-          onViewportChange={(nextViewport) => setViewport(nextViewport)}
+          onViewportChange={(nextViewport) => {
+            setViewport(nextViewport);
+            // When user manually moves the map, update the active geographic reference
+            setGeoReference(nextViewport.center);
+          }}
         />
 
         {/* Floating "My Location" Button */}
@@ -293,7 +308,7 @@ export function AppShell({ initialPlaces }: Props) {
               <div className="mt-4 space-y-3">
                 <SearchBar
                   value={query}
-                  bias={searchBias}
+                  bias={geoReference}
                   onChange={setQuery}
                   onSelectSuggestion={onSelectSuggestion}
                 />
@@ -336,7 +351,7 @@ export function AppShell({ initialPlaces }: Props) {
                   <p className="text-xs font-medium uppercase tracking-[0.2em] text-muted-foreground">
                     Nearby Places ({filteredPlaces.length})
                   </p>
-                  <span className="text-[11px] text-muted-foreground">Auto-updates on map move</span>
+                  <span className="text-[11px] text-muted-foreground">Nearest to active area</span>
                 </div>
                 <div className="mt-3 max-h-[calc(100dvh-440px)] overflow-y-auto pr-1">
                   <PlaceList
@@ -385,7 +400,7 @@ export function AppShell({ initialPlaces }: Props) {
               <div className="mt-3 space-y-2">
                 <SearchBar
                   value={query}
-                  bias={searchBias}
+                  bias={geoReference}
                   onChange={setQuery}
                   onSelectSuggestion={onSelectSuggestion}
                 />
@@ -408,7 +423,7 @@ export function AppShell({ initialPlaces }: Props) {
                   <p className="text-xs font-semibold uppercase tracking-[0.2em] text-muted-foreground">
                     Nearby ({filteredPlaces.length})
                   </p>
-                  <span className="text-[10px] text-muted-foreground">Tap marker or card</span>
+                  <span className="text-[10px] text-muted-foreground">Nearest first</span>
                 </div>
                 <div className="max-h-44 overflow-y-auto pr-1">
                   <PlaceList
@@ -436,6 +451,7 @@ export function AppShell({ initialPlaces }: Props) {
           isFavorite={selectedPlace ? isFavorite(selectedPlace.id) : false}
           onLocationUpdate={(loc) => {
             setUserLocation(loc);
+            setGeoReference({ latitude: loc.latitude, longitude: loc.longitude });
             setLocationStatus("granted");
           }}
         />

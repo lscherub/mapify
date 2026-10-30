@@ -59,6 +59,15 @@ export function SearchBar({ value, bias, onChange, onSelectSuggestion }: Props) 
             onChange(event.target.value);
             setOpen(true);
           }}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              if (filteredSuggestions.length > 0) {
+                onSelectSuggestion(filteredSuggestions[0]);
+                setOpen(false);
+              }
+            }
+          }}
           onFocus={() => setOpen(true)}
           onBlur={() => window.setTimeout(() => setOpen(false), 200)}
           placeholder="Search cafes, libraries, cities worldwide..."
