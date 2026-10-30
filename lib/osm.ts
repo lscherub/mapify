@@ -85,6 +85,134 @@ export async function fetchNearbyOsmPlaces(bounds: {
     .sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
 }
 
+export async function fetchNearbyDiscoveredVenues({
+  latitude,
+  longitude,
+  radiusMeters = 1000
+}: {
+  latitude: number;
+  longitude: number;
+  radiusMeters?: number;
+}): Promise<Place[]> {
+  const latDelta = radiusMeters / 111000;
+  const lonDelta = radiusMeters / (111000 * Math.cos((latitude * Math.PI) / 180));
+
+  const bounds = {
+    south: latitude - latDelta,
+    north: latitude + latDelta,
+    west: longitude - lonDelta,
+    east: longitude + lonDelta
+  };
+
+  const viewbox = `${bounds.west},${bounds.north},${bounds.east},${bounds.south}`;
+
+  const categories = [
+    { key: "amenity", value: "cafe" },
+    { key: "amenity", value: "restaurant" },
+    { key: "amenity", value: "fast_food" },
+    { key: "amenity", value: "library" },
+    { key: "amenity", value: "coworking_space" },
+    { key: "shop", value: "bakery" },
+    { key: "shop", value: "coffee" }
+  ];
+
+  const baseHeaders = {
+    "Accept-Language": "en",
+    "User-Agent": "Mapify-Admin/1.0 (https://mapify-blush.vercel.app)"
+  };
+
+  const nominatimPromises = categories.map(async ({ key, value }) => {
+    const url = new URL("https://nominatim.openstreetmap.org/search");
+    url.searchParams.set("format", "jsonv2");
+    url.searchParams.set(key, value);
+    url.searchParams.set("viewbox", viewbox);
+    url.searchParams.set("bounded", "1");
+    url.searchParams.set("limit", "15");
+    url.searchParams.set("addressdetails", "1");
+
+    try {
+      const res = await fetch(url.toString(), {
+        headers: baseHeaders,
+        signal: AbortSignal.timeout(4500)
+      });
+      if (!res.ok) return [];
+      return (await res.json()) as NominatimV2Result[];
+    } catch {
+      return [];
+    }
+  });
+
+  const overpassPromise = fetchOverpassPlaces(bounds).catch(() => []);
+
+  const [nomResults, overpassResults] = await Promise.all([
+    Promise.allSettled(nominatimPromises),
+    overpassPromise
+  ]);
+
+  const placesMap = new Map<string, Place>();
+
+  for (const settled of nomResults) {
+    if (settled.status === "fulfilled" && Array.isArray(settled.value)) {
+      for (const item of settled.value) {
+        if (!item.name || !item.lat || !item.lon) continue;
+        const placeLat = parseFloat(item.lat);
+        const placeLng = parseFloat(item.lon);
+        if (!Number.isFinite(placeLat) || !Number.isFinite(placeLng)) continue;
+
+        const distKm = haversineKm({ latitude, longitude }, { latitude: placeLat, longitude: placeLng });
+        const key = `${item.name.toLowerCase()}::${placeLat.toFixed(4)},${placeLng.toFixed(4)}`;
+
+        if (!placesMap.has(key)) {
+          const category = normalizeCategory(item.type || item.category || "Business");
+          const address = item.display_name
+            ? item.display_name.split(",").slice(0, 3).join(",")
+            : "Address not listed";
+          const city =
+            item.address?.city ??
+            item.address?.town ??
+            item.address?.village ??
+            item.address?.suburb ??
+            "";
+
+          placesMap.set(key, {
+            id: `osm-${item.osm_type || "node"}-${item.osm_id}`,
+            slug: `osm-${item.osm_id}-${Math.round(placeLat * 10000)}`,
+            name: item.name,
+            category,
+            latitude: placeLat,
+            longitude: placeLng,
+            address,
+            city,
+            source: "osm",
+            hasWifi: false,
+            wifiFree: false,
+            distanceKm: distKm,
+            wifiNetworks: [],
+            amenities: emptyAmenities(),
+            photos: []
+          });
+        }
+      }
+    }
+  }
+
+  if (Array.isArray(overpassResults)) {
+    for (const p of overpassResults) {
+      const key = `${p.name.toLowerCase()}::${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`;
+      if (!placesMap.has(key)) {
+        placesMap.set(key, {
+          ...p,
+          distanceKm: haversineKm({ latitude, longitude }, p)
+        });
+      }
+    }
+  }
+
+  return Array.from(placesMap.values()).sort(
+    (a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0)
+  );
+}
+
 async function fetchNominatimSuggestions(query: string, bias?: GeoPoint | null): Promise<Suggestion[]> {
   const baseHeaders = {
     "Accept-Language": "en",

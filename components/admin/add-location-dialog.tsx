@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useTransition } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   AlertCircle,
   Building,
@@ -8,7 +8,6 @@ import {
   Compass,
   Eye,
   EyeOff,
-  Globe,
   Loader2,
   MapPin,
   Plus,
@@ -28,7 +27,7 @@ import {
   emptyWifiNetworkInput,
   generateSlug
 } from "@/lib/admin-places";
-import { getBrowserLocation } from "@/lib/location";
+import { getDetailedBrowserLocation, type GeolocationStatus } from "@/lib/location";
 import {
   type AdminPlaceFormValues,
   type AdminWifiNetworkInput,
@@ -36,6 +35,7 @@ import {
   type DuplicateCheckMatch,
   type Place
 } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 type Props = {
   open: boolean;
@@ -46,52 +46,85 @@ type Props = {
 export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
   const [step, setStep] = useState<"discover" | "details">("discover");
   const [form, setForm] = useState<AdminPlaceFormValues>(emptyAdminFormValues());
-  const [searchQuery, setSearchQuery] = useState("");
+  
+  // Geolocation & Nearby Discovery State
+  const [gpsStatus, setGpsStatus] = useState<GeolocationStatus>("locating");
+  const [gpsError, setGpsError] = useState<string | null>(null);
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [radius, setRadius] = useState<number>(1000);
   const [discovering, setDiscovering] = useState(false);
   const [discoveredPlaces, setDiscoveredPlaces] = useState<DiscoveredBusiness[]>([]);
-  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  // Name Search State (strictly separated from nearby results)
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searching, setSearching] = useState(false);
+  const [searchResults, setSearchResults] = useState<DiscoveredBusiness[]>([]);
+
+  // Duplicate Check & Form State
   const [duplicateMatches, setDuplicateMatches] = useState<DuplicateCheckMatch[]>([]);
-  const [checkingDuplicates, setCheckingDuplicates] = useState(false);
+  const [, setCheckingDuplicates] = useState(false);
   const [saving, setSaving] = useState(false);
   const [showPasswords, setShowPasswords] = useState<Record<number, boolean>>({});
+
+  // Discover nearby businesses using coordinates
+  const handleDiscoverNearby = useCallback(async (lat: number, lng: number, rad = 1000) => {
+    setDiscovering(true);
+    try {
+      const res = await fetch(`/api/admin/discover?lat=${lat}&lng=${lng}&radius=${rad}`);
+      const data = await res.json();
+      if (res.ok && Array.isArray(data.places)) {
+        setDiscoveredPlaces(data.places);
+      } else {
+        setDiscoveredPlaces([]);
+      }
+    } catch {
+      toast.error("Could not complete nearby scan. Try searching by name below.");
+      setDiscoveredPlaces([]);
+    } finally {
+      setDiscovering(false);
+    }
+  }, []);
+
+  // Request GPS and trigger nearby discovery automatically
+  const requestLocationAndDiscover = useCallback(async () => {
+    setGpsStatus("locating");
+    setGpsError(null);
+
+    const geoResult = await getDetailedBrowserLocation();
+
+    if (geoResult.status === "success") {
+      setGpsStatus("success");
+      const coords = {
+        lat: geoResult.coordinates.latitude,
+        lng: geoResult.coordinates.longitude
+      };
+      setUserCoords(coords);
+      await handleDiscoverNearby(coords.lat, coords.lng, radius);
+    } else {
+      setGpsStatus(geoResult.status);
+      setGpsError(geoResult.error);
+      setDiscovering(false);
+    }
+  }, [handleDiscoverNearby, radius]);
 
   useEffect(() => {
     if (open) {
       setStep("discover");
       setForm(emptyAdminFormValues());
       setSearchQuery("");
+      setSearchResults([]);
       setDiscoveredPlaces([]);
       setDuplicateMatches([]);
-      // Attempt to get admin coordinates for nearby discovery
-      getBrowserLocation().then((loc) => {
-        if (loc) {
-          setUserCoords({ lat: loc.latitude, lng: loc.longitude });
-          handleDiscoverNearby(loc.latitude, loc.longitude);
-        }
-      });
+      setShowPasswords({});
+      // Automatically request location and scan nearby on open
+      requestLocationAndDiscover();
     }
-  }, [open]);
+  }, [open, requestLocationAndDiscover]);
 
-  // Discover nearby businesses using GPS coordinates
-  const handleDiscoverNearby = async (lat: number, lng: number) => {
-    setDiscovering(true);
-    try {
-      const res = await fetch(`/api/admin/discover?lat=${lat}&lng=${lng}`);
-      const data = await res.json();
-      if (res.ok && data.places) {
-        setDiscoveredPlaces(data.places);
-      }
-    } catch {
-      // Graceful fallback
-    } finally {
-      setDiscovering(false);
-    }
-  };
-
-  // Search businesses by name
+  // Search businesses by name (isolated query)
   const handleSearchByName = async () => {
     if (!searchQuery.trim()) return;
-    setDiscovering(true);
+    setSearching(true);
     try {
       const params = new URLSearchParams({ query: searchQuery.trim() });
       if (userCoords) {
@@ -100,13 +133,19 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
       }
       const res = await fetch(`/api/admin/discover?${params.toString()}`);
       const data = await res.json();
-      if (res.ok && data.places) {
-        setDiscoveredPlaces(data.places);
+      if (res.ok && Array.isArray(data.places)) {
+        setSearchResults(data.places);
+        if (data.places.length === 0) {
+          toast.info(`No businesses found matching "${searchQuery}".`);
+        }
+      } else {
+        setSearchResults([]);
       }
     } catch {
       toast.error("Discovery search failed. You can create the location manually.");
+      setSearchResults([]);
     } finally {
-      setDiscovering(false);
+      setSearching(false);
     }
   };
 
@@ -125,7 +164,7 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
       phone: biz.phone || "",
       website: biz.website || "",
       hours: biz.hours || "",
-      // Important: Do not automatically mark as Wi-Fi verified
+      // Preserved rule: Discovered businesses are NOT automatically marked Wi-Fi verified
       hasWifi: false,
       wifiFree: false,
       verifiedAt: "",
@@ -163,7 +202,7 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
         setDuplicateMatches(data.matches);
       }
     } catch {
-      // Ignore
+      // Ignore background check failure
     } finally {
       setCheckingDuplicates(false);
     }
@@ -172,7 +211,6 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
   // Wi-Fi Network management helpers
   const handleAddNetwork = () => {
     const newNet = emptyWifiNetworkInput();
-    // If it's the first network, make it primary
     if (form.wifiNetworks.length === 0) {
       newNet.isPrimary = true;
     } else {
@@ -190,7 +228,6 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
     const updated = [...form.wifiNetworks];
     updated[index] = { ...updated[index], ...patch };
 
-    // If this network was made primary, remove primary flag from others
     if (patch.isPrimary) {
       updated.forEach((net, i) => {
         if (i !== index) net.isPrimary = false;
@@ -212,7 +249,6 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
     });
   };
 
-  // Toggle amenity tag
   const toggleAmenity = (key: string) => {
     setForm((prev) => ({
       ...prev,
@@ -220,7 +256,6 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
     }));
   };
 
-  // Save location
   const handleSave = async () => {
     if (!form.name.trim() || !form.address.trim() || !form.category.trim()) {
       toast.error("Please fill in Name, Category, and Address.");
@@ -262,10 +297,10 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
               <Building className="h-5 w-5" />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-foreground">Add New Location</h2>
+              <h2 className="text-lg font-bold text-foreground">Add Location</h2>
               <p className="text-xs text-muted-foreground">
                 {step === "discover"
-                  ? "Discover nearby businesses or search by name"
+                  ? "Nearby businesses displayed first, or search by name"
                   : "Review details, configure Wi-Fi networks, and assign amenities"}
               </p>
             </div>
@@ -282,133 +317,263 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
         {/* Modal Body */}
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {step === "discover" ? (
-            /* STEP 1: DISCOVERY & SEARCH */
+            /* STEP 1: DISCOVERY & SEARCH WORKFLOW */
             <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row gap-3">
-                <div className="relative flex-1">
-                  <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    placeholder="Search businesses by name (e.g. Waves Coffee, Save-On-Foods)..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    onKeyDown={(e) => e.key === "Enter" && handleSearchByName()}
-                    className="pl-10 rounded-2xl"
-                  />
+              {/* SECTION A: NEARBY BUSINESSES (AUTOMATIC & DISPLAYED FIRST) */}
+              <div className="space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-border pb-2.5">
+                  <div className="flex items-center gap-2">
+                    <Compass className="h-4 w-4 text-emerald-500 shrink-0" />
+                    <h3 className="text-sm font-bold text-foreground">Nearby Businesses (Closest First)</h3>
+                    {discoveredPlaces.length > 0 && (
+                      <Badge variant="success" className="text-[10px] py-0 px-2 font-normal">
+                        {discoveredPlaces.length} nearby
+                      </Badge>
+                    )}
+                  </div>
+
+                  {/* Radius and Refresh controls */}
+                  <div className="flex items-center gap-2">
+                    {userCoords && (
+                      <div className="flex items-center rounded-xl bg-secondary/60 p-0.5 text-xs">
+                        {[500, 1000, 2000].map((r) => (
+                          <button
+                            key={r}
+                            type="button"
+                            onClick={() => {
+                              setRadius(r);
+                              handleDiscoverNearby(userCoords.lat, userCoords.lng, r);
+                            }}
+                            className={cn(
+                              "rounded-lg px-2 py-0.5 text-[11px] font-medium transition",
+                              radius === r
+                                ? "bg-background text-foreground shadow-sm"
+                                : "text-muted-foreground hover:text-foreground"
+                            )}
+                          >
+                            {r < 1000 ? `${r}m` : `${r / 1000}km`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+
+                    {userCoords && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleDiscoverNearby(userCoords.lat, userCoords.lng, radius)}
+                        disabled={discovering}
+                        className="h-7 w-7 p-0 rounded-lg text-muted-foreground hover:text-foreground"
+                        title="Refresh nearby scan"
+                      >
+                        <RefreshCw className={cn("h-3.5 w-3.5", discovering && "animate-spin")} />
+                      </Button>
+                    )}
+                  </div>
                 </div>
-                <Button
-                  type="button"
-                  onClick={handleSearchByName}
-                  disabled={discovering || !searchQuery.trim()}
-                  className="rounded-2xl gap-2 px-5"
-                >
-                  {discovering ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
-                  Search
-                </Button>
-                {userCoords && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => handleDiscoverNearby(userCoords.lat, userCoords.lng)}
-                    disabled={discovering}
-                    className="rounded-2xl gap-2"
-                  >
-                    <Compass className="h-4 w-4 text-emerald-500" />
-                    Nearby GPS
-                  </Button>
+
+                {/* State: Acquiring GPS */}
+                {gpsStatus === "locating" && (
+                  <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-8 text-muted-foreground gap-2">
+                    <Loader2 className="h-5 w-5 animate-spin text-primary" />
+                    <p className="text-xs font-medium">Acquiring your device GPS location...</p>
+                  </div>
+                )}
+
+                {/* State: Scanning nearby businesses */}
+                {gpsStatus === "success" && discovering && (
+                  <div className="flex flex-col items-center justify-center rounded-2xl border border-dashed border-border py-8 text-muted-foreground gap-2">
+                    <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
+                    <p className="text-xs font-medium">
+                      Scanning closest businesses within {radius < 1000 ? `${radius}m` : `${radius / 1000}km`}...
+                    </p>
+                  </div>
+                )}
+
+                {/* State: GPS Denied or Unavailable */}
+                {(gpsStatus === "denied" || gpsStatus === "unavailable" || gpsStatus === "timeout") && (
+                  <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 p-4 space-y-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-semibold text-amber-700 dark:text-amber-400 flex items-center gap-1.5">
+                        <AlertCircle className="h-4 w-4 shrink-0" />
+                        {gpsStatus === "denied" ? "Location Permission Needed" : "Location Unavailable"}
+                      </span>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={requestLocationAndDiscover}
+                        className="rounded-xl h-7 text-xs border-amber-500/30 text-amber-700 dark:text-amber-300 hover:bg-amber-500/20"
+                      >
+                        Retry GPS
+                      </Button>
+                    </div>
+                    <p className="text-muted-foreground text-[11px] leading-relaxed">
+                      {gpsError ||
+                        "Location access is required to automatically list businesses around you. You can enable permissions and retry, or use the search bar below."}
+                    </p>
+                  </div>
+                )}
+
+                {/* State: Discovered Businesses List (CLOSEST DISPLAYED FIRST in dedicated scroll container) */}
+                {!discovering && discoveredPlaces.length > 0 && (
+                  <div className="rounded-2xl border border-border bg-background overflow-hidden">
+                    <div className="max-h-[300px] overflow-y-auto divide-y divide-border">
+                      {discoveredPlaces.map((biz, idx) => (
+                        <div
+                          key={idx}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 hover:bg-secondary/40 transition gap-3"
+                        >
+                          <div className="space-y-1 flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-sm text-foreground truncate">{biz.name}</span>
+                              <Badge variant="default" className="text-[10px] py-0 px-2 font-medium">
+                                {biz.category}
+                              </Badge>
+                              {biz.distanceMeters !== undefined && (
+                                <span className="rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-bold text-emerald-600 dark:text-emerald-400">
+                                  {biz.distanceMeters}m away
+                                </span>
+                              )}
+                              {biz.isAlreadyInMapify ? (
+                                <Badge variant="warning" className="text-[10px] py-0 px-2 font-normal">
+                                  Already in Mapify
+                                </Badge>
+                              ) : (
+                                <Badge variant="success" className="text-[10px] py-0 px-2 font-normal">
+                                  New
+                                </Badge>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
+                              <MapPin className="h-3 w-3 shrink-0" />
+                              {biz.address} {biz.city ? `• ${biz.city}` : ""}
+                            </p>
+                          </div>
+
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleSelectDiscovered(biz)}
+                            className="rounded-xl shrink-0 text-xs h-8 px-3"
+                          >
+                            Select & Import
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* State: No nearby businesses found */}
+                {!discovering && gpsStatus === "success" && discoveredPlaces.length === 0 && (
+                  <div className="rounded-2xl border border-dashed border-border p-5 text-center space-y-1 text-xs text-muted-foreground">
+                    <p className="font-medium text-foreground">
+                      No businesses found within {radius < 1000 ? `${radius}m` : `${radius / 1000}km`}.
+                    </p>
+                    <p>Try expanding the search radius above, or search for a specific business below.</p>
+                  </div>
                 )}
               </div>
 
-              {/* Discovered Results List */}
-              <div className="space-y-3">
-                <div className="flex items-center justify-between text-xs text-muted-foreground px-1">
-                  <span>
-                    {discoveredPlaces.length > 0
-                      ? `Found ${discoveredPlaces.length} businesses`
-                      : "Discovered businesses will appear here"}
-                  </span>
-                  <span>External attribution: OpenStreetMap & Nominatim</span>
+              {/* SECTION B: SEARCH BY NAME (SEPARATED CLEARLY) */}
+              <div className="space-y-3 pt-2 border-t border-border">
+                <div className="flex items-center gap-2">
+                  <Search className="h-4 w-4 text-primary shrink-0" />
+                  <h3 className="text-sm font-bold text-foreground">Or Search by Business Name</h3>
                 </div>
 
-                {discovering && (
-                  <div className="flex flex-col items-center justify-center py-12 text-muted-foreground gap-2">
-                    <Loader2 className="h-6 w-6 animate-spin text-primary" />
-                    <p className="text-xs">Scanning nearby businesses...</p>
+                <div className="flex flex-col sm:flex-row gap-2.5">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                    <Input
+                      placeholder="Search any place or branch (e.g. Waves Coffee, Save-On-Foods)..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      onKeyDown={(e) => e.key === "Enter" && handleSearchByName()}
+                      className="pl-10 rounded-2xl h-10 text-xs"
+                    />
                   </div>
-                )}
+                  <Button
+                    type="button"
+                    onClick={handleSearchByName}
+                    disabled={searching || !searchQuery.trim()}
+                    className="rounded-2xl gap-2 px-5 h-10 text-xs shrink-0"
+                  >
+                    {searching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+                    Search
+                  </Button>
+                </div>
 
-                {!discovering && discoveredPlaces.length > 0 && (
-                  <div className="divide-y divide-border rounded-2xl border border-border bg-background overflow-hidden max-h-96 overflow-y-auto">
-                    {discoveredPlaces.map((biz, idx) => (
-                      <div
-                        key={idx}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between p-4 hover:bg-secondary/40 transition gap-3"
+                {/* Dedicated Search Results Box */}
+                {searchResults.length > 0 && (
+                  <div className="rounded-2xl border border-border bg-background overflow-hidden">
+                    <div className="flex items-center justify-between px-3.5 py-2 border-b border-border bg-secondary/30 text-xs text-muted-foreground">
+                      <span>Matching results for &ldquo;{searchQuery}&rdquo;</span>
+                      <button
+                        type="button"
+                        onClick={() => setSearchResults([])}
+                        className="text-xs hover:text-foreground font-medium"
                       >
-                        <div className="space-y-1 flex-1">
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="font-semibold text-sm text-foreground">{biz.name}</span>
-                            <Badge variant="default" className="text-[10px] py-0 px-2">
-                              {biz.category}
-                            </Badge>
-                            {biz.isAlreadyInMapify ? (
-                              <Badge variant="warning" className="text-[10px] py-0 px-2">
-                                Already in Mapify
-                              </Badge>
-                            ) : (
-                              <Badge variant="success" className="text-[10px] py-0 px-2">
-                                New to Mapify
-                              </Badge>
-                            )}
-                          </div>
-                          <p className="text-xs text-muted-foreground flex items-center gap-1">
-                            <MapPin className="h-3.5 w-3.5 shrink-0" />
-                            {biz.address} {biz.city ? `• ${biz.city}` : ""}
-                          </p>
-                          {biz.distanceMeters !== undefined && (
-                            <span className="text-[11px] text-primary font-medium">
-                              {biz.distanceMeters}m away from current location
-                            </span>
-                          )}
-                        </div>
-
-                        <Button
-                          type="button"
-                          size="sm"
-                          onClick={() => handleSelectDiscovered(biz)}
-                          className="rounded-xl shrink-0"
-                        >
-                          Select & Import
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-
-                {!discovering && discoveredPlaces.length === 0 && (
-                  <div className="rounded-2xl border border-dashed border-border p-8 text-center space-y-3">
-                    <Building className="mx-auto h-8 w-8 text-muted-foreground/60" />
-                    <div className="space-y-1">
-                      <p className="text-sm font-medium text-foreground">Can&apos;t find the business?</p>
-                      <p className="text-xs text-muted-foreground">
-                        You can search for a different query or enter venue details manually from scratch.
-                      </p>
+                        Clear
+                      </button>
                     </div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={handleCreateManually}
-                      className="rounded-xl gap-2 mt-2"
-                    >
-                      <Plus className="h-4 w-4" />
-                      Create Custom Location Manually
-                    </Button>
+                    <div className="max-h-[220px] overflow-y-auto divide-y divide-border">
+                      {searchResults.map((biz, idx) => (
+                        <div
+                          key={idx}
+                          className="flex flex-col sm:flex-row sm:items-center justify-between p-3 hover:bg-secondary/40 transition gap-3"
+                        >
+                          <div className="space-y-1 flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="font-bold text-sm text-foreground truncate">{biz.name}</span>
+                              <Badge variant="default" className="text-[10px] py-0 px-2 font-medium">
+                                {biz.category}
+                              </Badge>
+                              {biz.distanceMeters !== undefined && (
+                                <span className="text-[10px] text-emerald-600 dark:text-emerald-400 font-semibold">
+                                  ~{biz.distanceMeters}m away
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-xs text-muted-foreground truncate">{biz.address}</p>
+                          </div>
+
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={() => handleSelectDiscovered(biz)}
+                            className="rounded-xl shrink-0 text-xs h-7 px-3"
+                          >
+                            Select & Import
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
+              </div>
+
+              {/* SECTION C: MANUAL LOCATION CREATION OPTION */}
+              <div className="rounded-2xl border border-dashed border-border p-4 text-center space-y-2 pt-4">
+                <p className="text-xs text-muted-foreground">
+                  Can&apos;t find the venue in nearby or search results?
+                </p>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={handleCreateManually}
+                  className="rounded-xl gap-2 text-xs h-9"
+                >
+                  <Plus className="h-4 w-4" />
+                  Create Custom Location Manually
+                </Button>
               </div>
             </div>
           ) : (
             /* STEP 2: REVIEW, WI-FI NETWORKS & AMENITIES */
             <div className="space-y-8">
-              {/* Back to discovery button */}
               <div className="flex items-center justify-between">
                 <Button
                   type="button"
@@ -419,7 +584,7 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
                 >
                   ← Back to Discovery & Search
                 </Button>
-                <span className="text-xs text-muted-foreground">Editing new venue draft</span>
+                <span className="text-xs text-muted-foreground">Editing venue draft</span>
               </div>
 
               {/* Duplicate Warning Banner */}
@@ -858,4 +1023,3 @@ export function AddLocationDialog({ open, onClose, onSuccess }: Props) {
     </div>
   );
 }
-

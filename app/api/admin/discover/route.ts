@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { getAuthenticatedAdmin } from "@/lib/admin-auth";
-import { searchOsmSuggestions, fetchNearbyOsmPlaces } from "@/lib/osm";
+import { searchOsmSuggestions, fetchNearbyDiscoveredVenues } from "@/lib/osm";
 import { checkDuplicatePlace } from "@/lib/admin-crud";
 import { haversineKm } from "@/lib/place-utils";
 import { type DiscoveredBusiness } from "@/lib/types";
@@ -16,10 +16,12 @@ export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
   const latStr = searchParams.get("lat");
   const lngStr = searchParams.get("lng");
+  const radiusStr = searchParams.get("radius");
   const query = searchParams.get("query")?.trim();
 
   const lat = latStr ? parseFloat(latStr) : null;
   const lng = lngStr ? parseFloat(lngStr) : null;
+  const radius = radiusStr ? parseInt(radiusStr, 10) : 1000;
 
   try {
     let discovered: DiscoveredBusiness[] = [];
@@ -59,19 +61,12 @@ export async function GET(request: NextRequest) {
         });
       }
     } else if (lat !== null && lng !== null) {
-      // Coordinate-based nearby discovery (Overpass API within ~800m)
-      const latDelta = 0.007; // ~770m
-      const lonDelta = 0.010; // ~700m-800m depending on latitude
-
-      const bounds = {
-        south: lat - latDelta,
-        north: lat + latDelta,
-        west: lng - lonDelta,
-        east: lng + lonDelta,
-        bias: { latitude: lat, longitude: lng }
-      };
-
-      const nearbyPlaces = await fetchNearbyOsmPlaces(bounds);
+      // Coordinate-based nearby discovery using resilient Nominatim category queries & fallback
+      const nearbyPlaces = await fetchNearbyDiscoveredVenues({
+        latitude: lat,
+        longitude: lng,
+        radiusMeters: radius
+      });
 
       for (const place of nearbyPlaces) {
         const distanceMeters = place.distanceKm ? Math.round(place.distanceKm * 1000) : undefined;
@@ -87,15 +82,18 @@ export async function GET(request: NextRequest) {
           phone: place.phone,
           website: place.website,
           hours: place.hours,
-          source: "overpass",
+          source: "nominatim",
           isAlreadyInMapify: false
         });
       }
     }
 
+    // Sort closest first before duplicate checking
+    discovered.sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0));
+
     // Check against existing Mapify database to flag duplicates and existing venues
     const enriched: DiscoveredBusiness[] = await Promise.all(
-      discovered.slice(0, 25).map(async (business) => {
+      discovered.slice(0, 30).map(async (business) => {
         const dupCheck = await checkDuplicatePlace(
           business.name,
           business.latitude,
@@ -124,4 +122,3 @@ export async function GET(request: NextRequest) {
     );
   }
 }
-
