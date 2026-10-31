@@ -28,10 +28,12 @@ type Props = {
   open: boolean;
   userLocation: UserCoordinates | null;
   isCollected: boolean;
+  explorerId?: string;
   onClose: () => void;
   onCheckIn: (place: Place) => CheckInResult;
   onOpenWifiSubmission?: (place: Place) => void;
   onViewInCollection?: (placeId: string) => void;
+  onCanonicalPlaceCreated?: (place: Place) => void;
 };
 
 export function CheckInModal({
@@ -39,13 +41,16 @@ export function CheckInModal({
   open,
   userLocation,
   isCollected,
+  explorerId,
   onClose,
   onCheckIn,
   onOpenWifiSubmission,
-  onViewInCollection
+  onViewInCollection,
+  onCanonicalPlaceCreated
 }: Props) {
   const [isVerifying, setIsVerifying] = useState(false);
   const [checkInResult, setCheckInResult] = useState<CheckInResult | null>(null);
+  const [savedPlace, setSavedPlace] = useState<Place | null>(null);
 
   if (!open || !place) return null;
 
@@ -70,7 +75,7 @@ export function CheckInModal({
     setIsVerifying(true);
 
     try {
-      // Validate proximity through server API
+      // Validate proximity and create/link canonical venue through server API
       const res = await fetch("/api/explorer/check-in", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -80,7 +85,13 @@ export function CheckInModal({
           venueLat: place.latitude,
           venueLng: place.longitude,
           venueId: place.id,
-          venueName: place.name
+          venueName: place.name,
+          venueCategory: place.category,
+          venueAddress: place.address,
+          venueCity: place.city,
+          venueWebsite: place.website,
+          venuePhone: place.phone,
+          explorerId
         })
       });
 
@@ -92,8 +103,13 @@ export function CheckInModal({
         return;
       }
 
+      // Use canonical place from server if created or linked
+      const placeToCollect: Place = data.canonicalPlace || place;
+      setSavedPlace(placeToCollect);
+      onCanonicalPlaceCreated?.(placeToCollect);
+
       // Execute collection in explorer engine
-      const result = onCheckIn(place);
+      const result = onCheckIn(placeToCollect);
       if (result.success) {
         setCheckInResult(result);
         toast.success(`Venue Collected! +${result.totalXpEarned} XP`);
@@ -118,6 +134,7 @@ export function CheckInModal({
 
   const handleClose = () => {
     setCheckInResult(null);
+    setSavedPlace(null);
     onClose();
   };
 
@@ -222,8 +239,9 @@ export function CheckInModal({
                 <Button
                   type="button"
                   onClick={() => {
+                    const targetPlace = savedPlace || place;
                     handleClose();
-                    onOpenWifiSubmission?.(place);
+                    onOpenWifiSubmission?.(targetPlace);
                   }}
                   className="w-full h-11 rounded-xl bg-blue-600 hover:bg-blue-700 text-white font-semibold gap-2 shadow-md shadow-blue-600/20"
                 >

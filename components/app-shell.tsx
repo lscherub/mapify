@@ -135,7 +135,7 @@ export function AppShell({ initialPlaces }: Props) {
     };
   }, []);
 
-  // Fetch nearby OpenStreetMap businesses when viewport changes (debounced by 400ms)
+  // Fetch nearby OpenStreetMap and real-world Explorer businesses when viewport changes (debounced by 450ms)
   useEffect(() => {
     if (osmFetchTimerRef.current) {
       clearTimeout(osmFetchTimerRef.current);
@@ -149,10 +149,12 @@ export function AppShell({ initialPlaces }: Props) {
           const params = new URLSearchParams({
             bbox: `${viewport.bounds.west},${viewport.bounds.south},${viewport.bounds.east},${viewport.bounds.north}`,
             lat: String(viewport.center.latitude),
-            lng: String(viewport.center.longitude)
+            lng: String(viewport.center.longitude),
+            radius: "2500"
           });
 
-          const response = await fetch(`/api/osm/nearby?${params.toString()}`, {
+          // Dedicated real-world POI discovery endpoint with multi-instance Overpass & Nominatim fallback
+          const response = await fetch(`/api/explorer/discover?${params.toString()}`, {
             signal: controller.signal
           });
           if (!response.ok) return;
@@ -162,32 +164,50 @@ export function AppShell({ initialPlaces }: Props) {
             setOsmPlaces((prev) => dedupePlaces([...prev, ...(json.places ?? [])]));
           }
         } catch {
-          // Keep existing places if network hiccups
+          // Keep existing places if network hiccups or offline
         }
       })();
-    }, 400);
+    }, 450);
 
     return () => {
       if (osmFetchTimerRef.current) {
         clearTimeout(osmFetchTimerRef.current);
       }
     };
-  }, [viewport.bounds.east, viewport.bounds.north, viewport.bounds.south, viewport.bounds.west, viewport.center.latitude, viewport.center.longitude]);
+  }, [
+    viewport.bounds.east,
+    viewport.bounds.north,
+    viewport.bounds.south,
+    viewport.bounds.west,
+    viewport.center.latitude,
+    viewport.center.longitude
+  ]);
 
-  // Combine database places and discovered OSM places
+  // Combine database places and discovered real-world places
   const allPlaces = useMemo(() => dedupePlaces([...initialPlaces, ...osmPlaces]), [initialPlaces, osmPlaces]);
+
+  // Count of external POIs discovered
+  const nearbyDiscoveredCount = useMemo(() => {
+    return allPlaces.filter((p) => p.source === "osm").length;
+  }, [allPlaces]);
 
   // Location-aware, nearest-first ranking for place results using active geographic reference
   const filteredPlaces = useMemo(() => {
-    const data = filterPlaces(allPlaces, query, filters);
+    // In Explorer mode, display all discovered real-world venues without Wi-Fi restrictions
+    const activeFilters =
+      mode === "explorer"
+        ? { hasWifi: false, passwordAvailable: false, freeWifi: false, favoritesOnly: false }
+        : filters;
+
+    const data = filterPlaces(allPlaces, query, activeFilters);
     const ranked = rankPlaces(data, query, geoReference);
 
-    if (filters.favoritesOnly) {
+    if (activeFilters.favoritesOnly) {
       return ranked.filter((place) => favorites.includes(place.id));
     }
 
     return ranked;
-  }, [allPlaces, favorites, filters, query, geoReference]);
+  }, [allPlaces, favorites, filters, query, geoReference, mode]);
 
   const selectedPlace = useMemo(() => {
     if (!selectedPlaceId) return null;
@@ -343,6 +363,7 @@ export function AppShell({ initialPlaces }: Props) {
                 allPlaces={allPlaces}
                 userLocation={userLocation}
                 selectedPlace={selectedPlace}
+                discoveredCount={nearbyDiscoveredCount}
                 onSelectPlace={(id) => setSelectedPlaceId(id)}
                 onExitExplorer={() => setMode("discover")}
                 onOpenPlaceProfile={(placeId) => {
@@ -350,6 +371,10 @@ export function AppShell({ initialPlaces }: Props) {
                 }}
                 onOpenWifiSubmission={(place) => {
                   setSubmissionPlace(place);
+                }}
+                onCanonicalPlaceCreated={(canonicalPlace) => {
+                  upsertPlace(setOsmPlaces, canonicalPlace);
+                  setSelectedPlaceId(canonicalPlace.id);
                 }}
               />
             ) : (
@@ -448,6 +473,7 @@ export function AppShell({ initialPlaces }: Props) {
                 allPlaces={allPlaces}
                 userLocation={userLocation}
                 selectedPlace={selectedPlace}
+                discoveredCount={nearbyDiscoveredCount}
                 onSelectPlace={(id) => setSelectedPlaceId(id)}
                 onExitExplorer={() => setMode("discover")}
                 onOpenPlaceProfile={(placeId) => {
@@ -455,6 +481,10 @@ export function AppShell({ initialPlaces }: Props) {
                 }}
                 onOpenWifiSubmission={(place) => {
                   setSubmissionPlace(place);
+                }}
+                onCanonicalPlaceCreated={(canonicalPlace) => {
+                  upsertPlace(setOsmPlaces, canonicalPlace);
+                  setSelectedPlaceId(canonicalPlace.id);
                 }}
               />
             ) : (

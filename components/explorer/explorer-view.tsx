@@ -16,20 +16,24 @@ type Props = {
   allPlaces: Place[];
   userLocation: UserCoordinates | null;
   selectedPlace: Place | null;
+  discoveredCount?: number;
   onSelectPlace: (placeId: string | undefined) => void;
   onExitExplorer: () => void;
   onOpenPlaceProfile: (placeId: string) => void;
   onOpenWifiSubmission: (place: Place) => void;
+  onCanonicalPlaceCreated?: (place: Place) => void;
 };
 
 export function ExplorerView({
   allPlaces,
   userLocation,
   selectedPlace,
+  discoveredCount,
   onSelectPlace,
   onExitExplorer,
   onOpenPlaceProfile,
-  onOpenWifiSubmission
+  onOpenWifiSubmission,
+  onCanonicalPlaceCreated
 }: Props) {
   const {
     state,
@@ -104,6 +108,7 @@ export function ExplorerView({
         collectionCount={state.collection.length}
         activeQuestsCount={activeQuestsCount}
         unlockedAchievementsCount={unlockedAchievementsCount}
+        discoveredCount={discoveredCount}
       />
 
       {/* Main Tab Content Drawer / Container */}
@@ -158,10 +163,12 @@ export function ExplorerView({
         open={Boolean(selectedPlace && activeTab === "map")}
         userLocation={userLocation}
         isCollected={selectedPlace ? isCollected(selectedPlace.id) : false}
+        explorerId={state.profile.id}
         onClose={() => onSelectPlace(undefined)}
         onCheckIn={(place) => collectVenue(place)}
         onOpenWifiSubmission={onOpenWifiSubmission}
         onViewInCollection={() => setActiveTab("collection")}
+        onCanonicalPlaceCreated={onCanonicalPlaceCreated}
       />
     </>
   );

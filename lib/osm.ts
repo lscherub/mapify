@@ -40,7 +40,92 @@ type OverpassElement = {
 
 // In-memory cache for search queries (5-minute TTL)
 const searchCache = new Map<string, { timestamp: number; data: Suggestion[] }>();
+const explorerPlacesCache = new Map<string, { timestamp: number; data: Place[] }>();
 const CACHE_TTL_MS = 5 * 60 * 1000;
+
+export async function fetchNearbyExplorerPlaces({
+  latitude,
+  longitude,
+  radiusMeters = 2000,
+  bounds: customBounds
+}: {
+  latitude: number;
+  longitude: number;
+  radiusMeters?: number;
+  bounds?: { west: number; south: number; east: number; north: number };
+}): Promise<Place[]> {
+  const latDelta = radiusMeters / 111000;
+  const lonDelta = radiusMeters / (111000 * Math.cos((latitude * Math.PI) / 180));
+
+  const bounds = customBounds ?? {
+    south: latitude - latDelta,
+    north: latitude + latDelta,
+    west: longitude - lonDelta,
+    east: longitude + lonDelta
+  };
+
+  // Check in-memory cache using 2-decimal rounded coordinates (~1km bucket)
+  const cacheKey = `${latitude.toFixed(2)},${longitude.toFixed(2)}`;
+  const cached = explorerPlacesCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data
+      .map((p) => ({
+        ...p,
+        distanceKm: haversineKm({ latitude, longitude }, p)
+      }))
+      .sort((a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0));
+  }
+
+  // Step 1: Overpass multi-mirror query
+  let places = await fetchOverpassPlaces(bounds);
+
+  // Step 2: Resilient Nominatim category fallback if Overpass returned sparse or no results
+  if (!places.length || places.length < 8) {
+    try {
+      const nomPlaces = await fetchNearbyDiscoveredVenues({
+        latitude,
+        longitude,
+        radiusMeters
+      });
+
+      const existingKeys = new Set(
+        places.map((p) => `${p.name.toLowerCase()}::${p.latitude.toFixed(4)},${p.longitude.toFixed(4)}`)
+      );
+
+      for (const np of nomPlaces) {
+        const key = `${np.name.toLowerCase()}::${np.latitude.toFixed(4)},${np.longitude.toFixed(4)}`;
+        if (!existingKeys.has(key)) {
+          places.push(np);
+          existingKeys.add(key);
+        }
+      }
+    } catch {
+      // Keep Overpass results if Nominatim also fails
+    }
+  }
+
+  // Step 3: Deduplicate and sort nearest first
+  const uniqueMap = new Map<string, Place>();
+  for (const place of places) {
+    const key = `${place.name.toLowerCase()}::${place.latitude.toFixed(4)},${place.longitude.toFixed(4)}`;
+    if (!uniqueMap.has(key)) {
+      uniqueMap.set(key, {
+        ...place,
+        distanceKm: haversineKm({ latitude, longitude }, place)
+      });
+    }
+  }
+
+  const sorted = Array.from(uniqueMap.values()).sort(
+    (a, b) => (a.distanceKm ?? 0) - (b.distanceKm ?? 0)
+  );
+
+  if (sorted.length > 0) {
+    explorerPlacesCache.set(cacheKey, { timestamp: Date.now(), data: sorted });
+  }
+
+  return sorted;
+}
 
 export async function searchOsmSuggestions(query: string, bias?: GeoPoint | null): Promise<Suggestion[]> {
   const trimmed = query.trim();
@@ -434,80 +519,93 @@ async function fetchOverpassPlaces(bounds: { west: number; south: number; east: 
   }
 
   const query = `
-[out:json][timeout:25];
+[out:json][timeout:15];
 (
   node["amenity"~"cafe|restaurant|fast_food|pub|bar|library|coworking_space|internet_cafe|community_centre|college|university"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
   way["amenity"~"cafe|restaurant|fast_food|pub|bar|library|coworking_space|internet_cafe|community_centre|college|university"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
-  relation["amenity"~"cafe|restaurant|fast_food|pub|bar|library|coworking_space|internet_cafe|community_centre|college|university"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
-  node["shop"~"coffee|bakery|convenience|supermarket"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
-  way["shop"~"coffee|bakery|convenience|supermarket"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
+  node["shop"~"coffee|bakery|books|convenience|supermarket"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
+  way["shop"~"coffee|bakery|books|convenience|supermarket"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
   node["tourism"~"hotel|hostel|guest_house"](${bounds.south},${bounds.west},${bounds.north},${bounds.east});
 );
-out center tags;
+out center 60 tags;
 `;
 
-  try {
-    const response = await fetch("https://overpass-api.de/api/interpreter", {
-      method: "POST",
-      headers: {
-        "Content-Type": "text/plain"
-      },
-      body: query,
-      next: { revalidate: 120 }
-    } as RequestInit & { next?: { revalidate: number } });
+  const endpoints = [
+    "https://overpass-api.de/api/interpreter",
+    "https://overpass.kumi.systems/api/interpreter"
+  ];
 
-    if (!response.ok) return [];
+  for (const endpoint of endpoints) {
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain",
+          "User-Agent": "Mapify-Explorer/1.0"
+        },
+        body: query,
+        signal: AbortSignal.timeout(6000)
+      });
 
-    const data = (await response.json()) as { elements?: OverpassElement[] };
-    return (data.elements ?? [])
-      .map((element) => {
-        const coordinates = getCoordinates(element);
-        if (!coordinates) return null;
+      if (!response.ok) continue;
 
-        const tags = element.tags ?? {};
-        const name = tags.name ?? tags.brand ?? `${humanize(tags.amenity ?? tags.shop ?? tags.tourism ?? "Place")}`;
-        const category = normalizeCategory(tags.amenity ?? tags.shop ?? tags.tourism ?? tags.office ?? "Business");
-        const address = buildAddress(tags) || tags["addr:full"] || "Address not listed";
-        const city = tags["addr:city"] ?? tags["addr:town"] ?? tags["addr:suburb"] ?? "";
-        const phone = tags["contact:phone"] ?? tags.phone ?? undefined;
-        const website = tags["contact:website"] ?? tags.website ?? tags.url ?? undefined;
-        const hours = tags.opening_hours ?? undefined;
+      const data = (await response.json()) as { elements?: OverpassElement[] };
+      const elements = data.elements ?? [];
+      if (!elements.length) continue;
 
-        const place: Place = {
-          id: `osm-${element.type}-${element.id}`,
-          slug: `osm-${element.type}-${element.id}`,
-          name,
-          category,
-          latitude: coordinates.latitude,
-          longitude: coordinates.longitude,
-          address,
-          city,
-          website,
-          phone,
-          source: "osm",
-          hasWifi: false,
-          wifiFree: false,
-          wifiMessage: "Wi-Fi information has not yet been added to Mapify.",
-          notes: tags.description ?? `Discovered ${category.toLowerCase()}.`,
-          hours,
-          verifiedBy: "OpenStreetMap",
-          wifiNetworks: [],
-          amenities: emptyAmenities(),
-          photos: [],
-          osm: {
-            osmId: element.id,
-            osmType: element.type,
-            provider: "overpass",
-            tags
-          }
-        };
+      return elements
+        .map((element) => {
+          const coordinates = getCoordinates(element);
+          if (!coordinates) return null;
 
-        return place;
-      })
-      .filter(Boolean) as Place[];
-  } catch {
-    return [];
+          const tags = element.tags ?? {};
+          const name = tags.name ?? tags.brand ?? `${humanize(tags.amenity ?? tags.shop ?? tags.tourism ?? "Place")}`;
+          const category = normalizeCategory(tags.amenity ?? tags.shop ?? tags.tourism ?? tags.office ?? "Business");
+          const address = buildAddress(tags) || tags["addr:full"] || "Address not listed";
+          const city = tags["addr:city"] ?? tags["addr:town"] ?? tags["addr:suburb"] ?? "";
+          const phone = tags["contact:phone"] ?? tags.phone ?? undefined;
+          const website = tags["contact:website"] ?? tags.website ?? tags.url ?? undefined;
+          const hours = tags.opening_hours ?? undefined;
+
+          const place: Place = {
+            id: `osm-${element.type}-${element.id}`,
+            slug: `osm-${element.type}-${element.id}`,
+            name,
+            category,
+            latitude: coordinates.latitude,
+            longitude: coordinates.longitude,
+            address,
+            city,
+            website,
+            phone,
+            source: "osm",
+            hasWifi: false,
+            wifiFree: false,
+            wifiMessage: "Wi-Fi information has not yet been added to Mapify.",
+            notes: tags.description ?? `Discovered ${category.toLowerCase()}.`,
+            hours,
+            verifiedBy: "OpenStreetMap",
+            wifiNetworks: [],
+            amenities: emptyAmenities(),
+            photos: [],
+            osm: {
+              osmId: element.id,
+              osmType: element.type,
+              provider: "overpass",
+              tags
+            }
+          };
+
+          return place;
+        })
+        .filter(Boolean) as Place[];
+    } catch {
+      // Try next endpoint mirror
+      continue;
+    }
   }
+
+  return [];
 }
 
 function getCoordinates(element: OverpassElement) {

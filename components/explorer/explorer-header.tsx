@@ -16,6 +16,7 @@ type Props = {
   collectionCount: number;
   activeQuestsCount: number;
   unlockedAchievementsCount: number;
+  discoveredCount?: number;
 };
 
 export function ExplorerHeader({
@@ -26,7 +27,8 @@ export function ExplorerHeader({
   currentStreak,
   collectionCount,
   activeQuestsCount,
-  unlockedAchievementsCount
+  unlockedAchievementsCount,
+  discoveredCount
 }: Props) {
   return (
     <header className="glass-panel rounded-[2rem] p-3 shadow-xl border border-blue-500/20 bg-card/90 backdrop-blur-md">
@@ -98,7 +100,7 @@ export function ExplorerHeader({
         <button
           type="button"
           onClick={() => onSelectTab("map")}
-          className={`flex flex-col sm:flex-row items-center justify-center gap-1 py-1.5 px-2 rounded-xl text-xs font-medium transition ${
+          className={`relative flex flex-col sm:flex-row items-center justify-center gap-1 py-1.5 px-2 rounded-xl text-xs font-medium transition ${
             activeTab === "map"
               ? "bg-blue-600 text-white shadow-sm font-semibold"
               : "text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -106,6 +108,15 @@ export function ExplorerHeader({
         >
           <Compass className="h-4 w-4" />
           <span className="text-[11px]">Radar</span>
+          {discoveredCount !== undefined && discoveredCount > 0 && (
+            <span
+              className={`text-[9px] rounded-full px-1 py-0 font-bold ${
+                activeTab === "map" ? "bg-white/20 text-white" : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {discoveredCount}
+            </span>
+          )}
         </button>
 
         <button
