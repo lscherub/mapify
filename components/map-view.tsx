@@ -23,6 +23,9 @@ type Props = {
     bounds: { west: number; south: number; east: number; north: number };
   }) => void;
   onMapReady?: (map: MapLibreMap) => void;
+  isExplorerMode?: boolean;
+  collectedPlaceIds?: string[];
+  questCategories?: string[];
 };
 
 type GeoJsonFeatureCollection = {
@@ -42,6 +45,8 @@ type GeoJsonFeatureCollection = {
       isVerified: string;
       isSelected: string;
       source: string;
+      isCollected?: string;
+      isQuestTarget?: string;
     };
   }>;
 };
@@ -77,16 +82,29 @@ export function MapView({
   onPanTargetHandled,
   onSelectPlace,
   onViewportChange,
-  onMapReady
+  onMapReady,
+  isExplorerMode = false,
+  collectedPlaceIds = [],
+  questCategories = []
 }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
-  const geojsonRef = useRef<GeoJsonFeatureCollection>(buildGeoJson(places, selectedPlaceId));
+  const geojsonRef = useRef<GeoJsonFeatureCollection>(
+    buildGeoJson(places, selectedPlaceId, collectedPlaceIds, questCategories)
+  );
   const userLocationRef = useRef<{ latitude: number; longitude: number; accuracy?: number } | null>(null);
+  const isExplorerModeRef = useRef(isExplorerMode);
   const moveEndTimeoutRef = useRef<number | null>(null);
   const hasInitialCenteredUser = useRef<boolean>(false);
 
-  const geojson = useMemo(() => buildGeoJson(places, selectedPlaceId), [places, selectedPlaceId]);
+  const geojson = useMemo(
+    () => buildGeoJson(places, selectedPlaceId, collectedPlaceIds, questCategories),
+    [places, selectedPlaceId, collectedPlaceIds, questCategories]
+  );
+
+  useEffect(() => {
+    isExplorerModeRef.current = isExplorerMode;
+  }, [isExplorerMode]);
 
   useEffect(() => {
     geojsonRef.current = geojson;
@@ -134,6 +152,34 @@ export function MapView({
           "line-color": "#2563EB",
           "line-opacity": 0.35,
           "line-width": 1.5
+        }
+      });
+
+      // 1b. Explorer 100m check-in radar range circle
+      map.addSource("explorer-radar", {
+        type: "geojson",
+        data: buildExplorerRadarGeoJson(userLocationRef.current, isExplorerModeRef.current)
+      });
+
+      map.addLayer({
+        id: "explorer-radar-fill",
+        type: "fill",
+        source: "explorer-radar",
+        paint: {
+          "fill-color": "#06B6D4",
+          "fill-opacity": 0.08
+        }
+      });
+
+      map.addLayer({
+        id: "explorer-radar-stroke",
+        type: "line",
+        source: "explorer-radar",
+        paint: {
+          "line-color": "#0891B2",
+          "line-opacity": 0.5,
+          "line-width": 2,
+          "line-dasharray": [3, 2]
         }
       });
 
@@ -229,6 +275,32 @@ export function MapView({
         }
       });
 
+      // Collected venue golden glow
+      map.addLayer({
+        id: "unclustered-collected-glow",
+        type: "circle",
+        source: "places",
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "isCollected"], "true"]],
+        paint: {
+          "circle-color": "#F59E0B",
+          "circle-opacity": 0.35,
+          "circle-radius": 16
+        }
+      });
+
+      // Special Quest target purple glow
+      map.addLayer({
+        id: "unclustered-quest-glow",
+        type: "circle",
+        source: "places",
+        filter: ["all", ["!", ["has", "point_count"]], ["==", ["get", "isQuestTarget"], "true"]],
+        paint: {
+          "circle-color": "#8B5CF6",
+          "circle-opacity": 0.38,
+          "circle-radius": 16
+        }
+      });
+
       // Verified Wi-Fi ambient glow
       map.addLayer({
         id: "unclustered-verified-glow",
@@ -243,7 +315,10 @@ export function MapView({
       });
 
       // Unclustered place markers:
-      // Emerald (#059669) for verified Wi-Fi, Slate (#64748B) for unverified
+      // Amber (#F59E0B) for collected venues
+      // Purple (#8B5CF6) for quest targets
+      // Emerald (#059669) for verified Wi-Fi
+      // Blue (#2563EB) or Slate (#64748B) for unverified / missing Wi-Fi
       map.addLayer({
         id: "unclustered-point",
         type: "circle",
@@ -252,11 +327,22 @@ export function MapView({
         paint: {
           "circle-color": [
             "case",
+            ["==", ["get", "isCollected"], "true"],
+            "#F59E0B",
+            ["==", ["get", "isQuestTarget"], "true"],
+            "#8B5CF6",
             ["==", ["get", "isVerified"], "true"],
             "#059669",
-            "#64748B"
+            "#2563EB"
           ],
-          "circle-radius": 9,
+          "circle-radius": [
+            "case",
+            ["==", ["get", "isCollected"], "true"],
+            10,
+            ["==", ["get", "isQuestTarget"], "true"],
+            11,
+            9
+          ],
           "circle-stroke-width": 2.5,
           "circle-stroke-color": "#ffffff"
         }
@@ -381,6 +467,11 @@ export function MapView({
       accuracySource.setData(buildUserAccuracyGeoJson(location));
     }
 
+    const radarSource = map.getSource("explorer-radar") as maplibregl.GeoJSONSource | undefined;
+    if (radarSource) {
+      radarSource.setData(buildExplorerRadarGeoJson(location, isExplorerMode));
+    }
+
     // Auto-center on user GPS strictly ONCE during initial startup
     if (location && !hasInitialCenteredUser.current) {
       hasInitialCenteredUser.current = true;
@@ -422,7 +513,15 @@ export function MapView({
   return <div ref={containerRef} className="absolute inset-0" />;
 }
 
-function buildGeoJson(places: Place[], selectedPlaceId?: string): GeoJsonFeatureCollection {
+function buildGeoJson(
+  places: Place[],
+  selectedPlaceId?: string,
+  collectedPlaceIds: string[] = [],
+  questCategories: string[] = []
+): GeoJsonFeatureCollection {
+  const collectedSet = new Set(collectedPlaceIds);
+  const questCatLower = questCategories.map((c) => c.toLowerCase());
+
   return {
     type: "FeatureCollection",
     features: places.map((place) => {
@@ -431,6 +530,11 @@ function buildGeoJson(places: Place[], selectedPlaceId?: string): GeoJsonFeature
         Array.isArray(place.wifiNetworks) &&
         place.wifiNetworks.length > 0 &&
         Boolean(place.verifiedAt);
+
+      const isCollected = collectedSet.has(place.id);
+      const isQuestTarget =
+        !isCollected &&
+        questCatLower.some((qc) => (place.category || "").toLowerCase().includes(qc));
 
       return {
         type: "Feature",
@@ -446,10 +550,53 @@ function buildGeoJson(places: Place[], selectedPlaceId?: string): GeoJsonFeature
           wifiFree: place.wifiFree ? "true" : "false",
           isVerified: isVerified ? "true" : "false",
           isSelected: place.id === selectedPlaceId ? "true" : "false",
-          source: place.source
+          source: place.source,
+          isCollected: isCollected ? "true" : "false",
+          isQuestTarget: isQuestTarget ? "true" : "false"
         }
       };
     })
+  };
+}
+
+function buildExplorerRadarGeoJson(
+  location: { latitude: number; longitude: number } | null,
+  enabled: boolean
+) {
+  if (!enabled || !location) {
+    return {
+      type: "FeatureCollection" as const,
+      features: []
+    };
+  }
+
+  // Generate 36-point polygon for the 100m check-in radar range circle
+  const points = 36;
+  const km = 0.1; // 100 meters
+  const distanceX = km / (111.32 * Math.cos((location.latitude * Math.PI) / 180));
+  const distanceY = km / 110.574;
+  const coordinates: [number, number][] = [];
+
+  for (let i = 0; i < points; i++) {
+    const theta = (i / points) * (2 * Math.PI);
+    const x = distanceX * Math.cos(theta);
+    const y = distanceY * Math.sin(theta);
+    coordinates.push([location.longitude + x, location.latitude + y]);
+  }
+  coordinates.push(coordinates[0]);
+
+  return {
+    type: "FeatureCollection" as const,
+    features: [
+      {
+        type: "Feature" as const,
+        geometry: {
+          type: "Polygon" as const,
+          coordinates: [coordinates]
+        },
+        properties: {}
+      }
+    ]
   };
 }
 

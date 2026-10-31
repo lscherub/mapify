@@ -77,11 +77,14 @@ export async function POST(request: NextRequest) {
 
     const client = createSupabaseAdminClient();
 
+    const submissionId = crypto.randomUUID();
+
     if (client) {
       // Validate placeId if provided (must be valid UUID if referencing places table)
       const isUUID = placeId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(placeId);
 
       const { error: dbError } = await client.from("wifi_submissions").insert({
+        id: submissionId,
         place_id: isUUID ? placeId : null,
         place_name: placeName,
         place_address: placeAddress || null,
@@ -104,6 +107,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({
       success: true,
+      submissionId,
       message: "Thank you! Your Wi-Fi information has been received and will be reviewed by an administrator before appearing publicly."
     });
   } catch (error) {

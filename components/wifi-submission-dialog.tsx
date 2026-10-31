@@ -12,7 +12,7 @@ type Props = {
   place: Place | null;
   open: boolean;
   onClose: () => void;
-  onSuccess?: () => void;
+  onSuccess?: (info?: { submissionId?: string; ssid: string }) => void;
 };
 
 export function WifiSubmissionDialog({ place, open, onClose, onSuccess }: Props) {
@@ -64,7 +64,7 @@ export function WifiSubmissionDialog({ place, open, onClose, onSuccess }: Props)
       setSubmitted(true);
       toast.success("Wi-Fi details submitted for verification!");
       setTimeout(() => {
-        onSuccess?.();
+        onSuccess?.({ submissionId: data.submissionId, ssid: ssid.trim() });
         onClose();
         setSubmitted(false);
         setSsid("");

@@ -44,6 +44,7 @@ type Props = {
   onToggleFavorite: () => void;
   isFavorite: boolean;
   onLocationUpdate?: (location: UserCoordinates) => void;
+  onWifiSubmitted?: (info: { submissionId?: string; ssid: string }) => void;
 };
 
 const amenityLabels: Array<{ key: string; label: string }> = [
@@ -75,7 +76,8 @@ export function PlaceSheet({
   onClose,
   onToggleFavorite,
   isFavorite,
-  onLocationUpdate
+  onLocationUpdate,
+  onWifiSubmitted
 }: Props) {
   const [selectedNetworkId, setSelectedNetworkId] = useState<string | undefined>();
   const [revealedPassword, setRevealedPassword] = useState<string | null>(null);
@@ -604,7 +606,10 @@ export function PlaceSheet({
         place={place}
         open={submissionOpen}
         onClose={() => setSubmissionOpen(false)}
-        onSuccess={() => {
+        onSuccess={(info) => {
+          if (info) {
+            onWifiSubmitted?.(info);
+          }
           toast.info("Thank you! An administrator will review your contribution.");
         }}
       />
